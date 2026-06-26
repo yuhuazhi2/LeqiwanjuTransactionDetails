@@ -1,0 +1,48 @@
+# ============================================================
+# 分店财务报表生成工具 - 全局配置文件
+# ============================================================
+
+# ---- 数据库连接配置 (SQL Server 2008R2) ----
+database:
+  server: "server03"           # SQL Server 主机地址
+  port: 1433                   # 端口号（默认1433）
+  ufsystem_db: "UFSystem"      # 公共数据库名称（存放所有账套信息）
+  account_db_prefix: "UFDATA_" # 账套数据库前缀（如 UFDATA_001_2024）
+  username: "sa"               # 数据库登录名
+  password: "YUHUAZHIsql1"     # 数据库密码
+  timeout: 30                  # 连接超时（秒）
+  charset: "GBK"               # 用友数据库字符集一般为GBK
+
+# ---- 模板文件配置 ----
+template:
+  filepath: "分店财务报表模板.xlsx"        # 模板文件路径（相对项目根目录）
+  source_sheet: "三江店报表"               # 参考页签名（模板中已有的页签）
+  year_row: 1                            # 年份/店名所在行（1-indexed）
+  header_row: 2                          # 月份表头所在行
+  data_start_row: 3                      # 数据起始行
+
+# ---- 输出配置 ----
+output:
+  dir: "output"                          # 输出目录
+  filename_prefix: "分店财务报表_"         # 输出文件名前缀
+  file_extension: ".xlsx"                # 输出格式（.xlsx / .xls）
+  open_when_done: true                   # 生成后是否自动打开文件
+
+# ---- 账套筛选条件 ----
+account_filter:
+  # 留空则自动取全部账套；可指定具体账套号列表
+  # 例如: ["001", "002"]
+  include_ids: []
+  # 排除指定账套号
+  exclude_ids: []
+
+# ---- 取数年份 ----
+report_year: 2024
+# 月份范围：1~12，留空则取全年
+report_months: []   # 例如 [1,2,3] 只取第一季度；[] 取全年
+
+# ---- 日志配置 ----
+logging:
+  level: "INFO"                          # DEBUG / INFO / WARNING / ERROR
+  file: "logs/app.log"                   # 日志文件路径（留空则不写文件）
+  console: true                          # 是否输出到控制台
