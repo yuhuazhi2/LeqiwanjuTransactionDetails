@@ -16,7 +16,7 @@ database:
 # ---- 模板文件配置 ----
 template:
   filepath: "分店财务报表模板.xlsx"        # 模板文件路径（相对项目根目录）
-  source_sheet: "三江店报表"               # 参考页签名（模板中已有的页签）
+  source_sheet: "sheet"                  # 参考页签名（模板中已有的页签）
   year_row: 1                            # 年份/店名所在行（1-indexed）
   header_row: 2                          # 月份表头所在行
   data_start_row: 3                      # 数据起始行

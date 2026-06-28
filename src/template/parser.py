@@ -55,7 +55,12 @@ class TemplateParser:
         "银行余额"
     ]
 
-    def __init__(self, filepath: str, sheet_name: str = "三江店报表"):
+    def __init__(self, filepath: str, sheet_name: str = ""):
+        """
+        :param filepath: 模板文件路径
+        :param sheet_name: 要解析的sheet名称，
+                           空字符串或None则自动使用第一个sheet
+        """
         self.filepath = filepath
         self.sheet_name = sheet_name
         self._wb = None
@@ -63,10 +68,14 @@ class TemplateParser:
     def parse(self) -> TemplateLayout:
         """解析模板，返回布局信息"""
         self._wb = load_workbook(self.filepath, data_only=True)
-        ws = self._wb[self.sheet_name]
+        # 如果未指定sheet名称（空字符串），自动取第一个sheet
+        sheet_name = self.sheet_name
+        if not sheet_name or sheet_name not in self._wb.sheetnames:
+            sheet_name = self._wb.sheetnames[0]
+        ws = self._wb[sheet_name]
 
         layout = TemplateLayout(
-            sheet_name=self.sheet_name,
+            sheet_name=sheet_name,   # 使用解析后的实际sheet名称，而非原始参数
             row_labels=self._parse_rows(ws),
             columns=self._parse_columns(ws),
             months=[],

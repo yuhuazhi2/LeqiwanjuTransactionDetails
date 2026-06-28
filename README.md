@@ -82,7 +82,7 @@ database:
 
 template:
   filepath: "分店财务报表模板.xlsx"   # 模板文件路径
-  source_sheet: "三江店报表"          # 模板页签名
+  source_sheet: "sheet"             # 模板页签名
 
 report_year: 2024                     # 报表年份
 ```

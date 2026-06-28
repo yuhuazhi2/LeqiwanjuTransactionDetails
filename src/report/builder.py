@@ -108,9 +108,12 @@ class ReportBuilder:
     @property
     def template_parser(self) -> TemplateParser:
         if self._template_parser is None:
+            # 优先取配置中指定的 source_sheet，未指定则传空字符串，
+            # TemplateParser 内部会自动取第一个sheet
+            sheet_name = self.template_config.get("source_sheet", "")
             self._template_parser = TemplateParser(
                 self.template_path,
-                self.template_config.get("source_sheet", "三江店报表")
+                sheet_name
             )
         return self._template_parser
 
@@ -125,6 +128,101 @@ class ReportBuilder:
         if not os.path.exists(path):
             raise FileNotFoundError(f"模板文件不存在: {path}")
         return path
+
+    # ================================================================
+    # 方法 build_framework — 生成报表初步框架雏形（V2.0 新增）
+    # ================================================================
+    # 功能说明：
+    #   以"分店财务报表模板.xlsx"为雏形，从 UA_Account 表查询所有
+    #   合规账套（cacc_name字段），每个账套复制一个表页，表页名称
+    #   即为账套名称，在每个表页的 A2 位置用红色字体填入账套名称。
+    #
+    # 与现有 build() 方法的区别：
+    #   - build()：完整流程（查询模板 → 取数 → 填充数据 → 出报表）
+    #   - build_framework()：仅做框架（复制模板页签 + 写入账套名），
+    #     不填充任何财务数据，供客户预览效果
+    # ================================================================
+
+    def build_framework(self, accounts: list = None) -> str:
+        """
+        生成报表框架雏形（V2.0新增）
+        ========================
+        功能：以模板为基础，为每个合规账套复制一个表页，
+             在A2位置用红色字体填入账套名称，形成报表初步框架。
+             生成的工作簿不保留模板原sheet，直接按账套名称命名各表页。
+
+        流程（基于 openpyxl.copy_worksheet 在同一工作簿内复制）：
+          1. 加载模板文件，获取模板sheet（取第一个sheet，或配置中指定的sheet）
+          2. 如果未传入 accounts 参数，则从 UA_Account 表自动查询
+          3. 对每个账套，用 copy_worksheet() 复制模板sheet，
+             再以账套名重命名新sheet
+          4. 所有账套复制完毕后，删除原始的模板sheet
+          5. 在每个新sheet的 A2 单元格写入账套名称并设为红色字体
+          6. 保存到 output/ 目录
+
+        参数:
+            accounts: 指定的账套列表（可选），
+                      不传则自动查询全部合规账套（过滤 998/999）
+
+        返回:
+            str: 生成的Excel文件绝对路径
+        """
+        logger.info("=" * 60)
+        logger.info("开始生成报表框架雏形")
+        logger.info(f"模板: {self.template_path}")
+
+        # ---- 步骤1：如果未传入账套列表，则自动从 UA_Account 查询 ----
+        if accounts is None:
+            accounts = self._get_accounts()
+        logger.info(f"共查询到 {len(accounts)} 个合规账套")
+
+        if not accounts:
+            logger.warning("未查询到任何账套，请检查数据库配置！")
+            raise ValueError("未查询到账套信息")
+
+        # ---- 步骤2：加载模板工作簿 ----
+        # 直接使用模板工作簿，在其内部用 copy_worksheet 复制sheet
+        # 这是 openpyxl 原生支持的同一工作簿内复制方式，不会出现
+        # 跨工作簿的 StyleProxy 兼容性问题
+        self._wb = load_workbook(self.template_path)
+        # 获取源sheet名称：优先取配置中指定的 sheet 名，
+        # 如果配置未指定或找不到，则取模板文件中的第一个 sheet
+        template_sheet_name = self.template_config.get("source_sheet", "")
+        if not template_sheet_name or template_sheet_name not in self._wb.sheetnames:
+            template_sheet_name = self._wb.sheetnames[0]
+            logger.info(f"自动获取模板sheet名称: {template_sheet_name}")
+        template_ws = self._wb[template_sheet_name]
+
+        # ---- 步骤3：遍历每个账套，用 copy_worksheet 复制sheet ----
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]  # Excel sheet名最多31字符
+            logger.info(f"  处理账套: {acc.cAcc_Name} (ID={acc.cAcc_Id})")
+            # copy_worksheet 在同一工作簿内复制全部内容和样式（原生支持）
+            new_ws = self._wb.copy_worksheet(template_ws)
+            new_ws.title = sheet_name
+
+        # ---- 步骤4：删除原始的模板sheet，只保留账套sheet ----
+        if template_sheet_name in self._wb.sheetnames:
+            del self._wb[template_sheet_name]
+
+        # ---- 步骤5：遍历每个账套sheet，在A2填入账套名称并设红色字体 ----
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]
+            if sheet_name in self._wb.sheetnames:
+                ws = self._wb[sheet_name]
+                a2_cell = ws.cell(row=2, column=1)
+                a2_cell.value = acc.cAcc_Name
+                a2_cell.font = Font(
+                    name="微软雅黑", size=11, bold=True,
+                    color="FF0000"  # 红色
+                )
+
+        # ---- 步骤6：保存工作簿到输出目录 ----
+        output_path = self._save_framework_workbook()
+
+        logger.info(f"框架雏形生成完成，共 {len(accounts)} 个表页")
+        logger.info(f"文件路径: {output_path}")
+        return output_path
 
     def build(self) -> str:
         """
@@ -225,9 +323,33 @@ class ReportBuilder:
                 new_cell = dst_ws.cell(row=cell.row, column=1)
                 new_cell.value = cell.value
                 if cell.has_style:
-                    new_cell.font = cell.font
-                    new_cell.alignment = cell.alignment
-                    new_cell.fill = cell.fill
+                    # 按原始属性值重新构造 StyleProxy 对象，避免跨工作簿直接赋值
+                    try:
+                        new_cell.font = Font(
+                            name=cell.font.name,
+                            size=cell.font.size,
+                            bold=cell.font.bold,
+                            italic=cell.font.italic,
+                            color=cell.font.color,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        new_cell.alignment = Alignment(
+                            horizontal=cell.alignment.horizontal,
+                            vertical=cell.alignment.vertical,
+                            wrap_text=cell.alignment.wrap_text,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        new_cell.fill = PatternFill(
+                            fill_type=cell.fill.fill_type,
+                            start_color=cell.fill.start_color,
+                            end_color=cell.fill.end_color,
+                        )
+                    except Exception:
+                        pass
 
         # 复制表头行（第2行）
         for col_idx, col_header in enumerate(template.columns, 1):
@@ -430,7 +552,7 @@ class ReportBuilder:
         cell.border = self.THIN_BORDER
 
     def _save_workbook(self) -> str:
-        """保存工作簿到输出文件"""
+        """保存（完整报表）工作簿到输出文件"""
         output_dir = self.output_config.get("dir", "output")
         os.makedirs(output_dir, exist_ok=True)
 
@@ -441,6 +563,35 @@ class ReportBuilder:
         output_path = os.path.join(output_dir, filename)
 
         self._wb.save(output_path)
+        return os.path.abspath(output_path)
+
+    # ================================================================
+    # _save_framework_workbook — 保存框架雏形工作簿（V2.0 新增）
+    # ================================================================
+    # 专用于 build_framework() 的保存方法，与 _save_workbook() 的区别：
+    #   - 文件名加 "_框架雏形" 后缀，与完整报表区分
+    #   - 其余逻辑相同（输出目录、时间戳、扩展名）
+    # ================================================================
+
+    def _save_framework_workbook(self) -> str:
+        """
+        保存框架雏形工作簿到输出文件
+        ==============================
+        生成的文件名格式如：分店财务报表_框架雏形_2024_20260626_112233.xlsx
+        保存后自动关闭工作簿释放资源。
+        """
+        output_dir = self.output_config.get("dir", "output")
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 生成带"框架雏形"后缀的文件名，便于与完整报表区分
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        prefix = self.output_config.get("filename_prefix", "分店财务报表_")
+        ext = self.output_config.get("file_extension", ".xlsx")
+        filename = f"{prefix}框架雏形_{self.report_year}_{timestamp}{ext}"
+        output_path = os.path.join(output_dir, filename)
+
+        self._wb.save(output_path)
+        logger.info(f"框架雏形文件已保存: {output_path}")
         return os.path.abspath(output_path)
 
     @staticmethod

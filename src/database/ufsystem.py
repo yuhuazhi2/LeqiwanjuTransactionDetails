@@ -121,4 +121,48 @@ class UFSystemQuerier:
         用友T3标准命名规则：UFDATA_账套号_年度
         注：实际年度需从账套的年度信息中获取
         """
+    def get_all_account_years_map(self) -> dict[str, list[int]]:
+        """
+        批量查询所有账套的可用年份映射
+        :return: {账套号: [年份列表(降序)], ...}
+        UA_Period 表中 cAcc_Id 与 UA_Account.cAcc_Id 一致
+        """
+        sql = """
+            SELECT DISTINCT cAcc_Id, iyear
+            FROM UA_Period
+            ORDER BY cAcc_Id, iyear DESC
+        """
+        try:
+            rows = self.connector.execute_query(sql, database=self._db_name)
+        except Exception:
+            return {}
+
+        result: dict[str, list[int]] = {}
+        for row in rows:
+            acc_id = str(row["cAcc_Id"]).strip()
+            year = int(row["iyear"])
+            if acc_id not in result:
+                result[acc_id] = []
+            result[acc_id].append(year)
+        return result
+
         return f"UFDATA_{acc_id.zfill(3)}"
+    def get_account_years(self, acc_id: str) -> list[int]:
+        """
+        从 UA_Period 表查询指定账套的可用年份
+        :param acc_id: 账套号，如 "001"
+        :return: 年份列表（降序排列）
+        """
+        sql = """
+            SELECT DISTINCT iyear
+            FROM UA_Period
+            WHERE cAcc_Id = %s
+            ORDER BY iyear DESC
+        """
+        try:
+            rows = self.connector.execute_query(
+                sql, database=self._db_name, params=(acc_id,)
+            )
+            return [int(row["iyear"]) for row in rows if row.get("iyear")]
+        except Exception:
+            return []

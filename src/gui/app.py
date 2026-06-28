@@ -4,8 +4,8 @@
 ==========
 使用 tkinter 构建的交互式对话框，用于：
 1. 输入数据库连接信息（自动保留上次输入）
-2. 连接后展示账套列表（多选勾选框）
-3. 执行生成合并汇总报表
+2. 连接后展示账套列表（每行带年份下拉选择框）
+3. 执行生成报表框架雏形
 
 设计原则：
 - 数据库相关模块使用延迟导入，确保GUI界面可独立启动
@@ -17,6 +17,7 @@ from tkinter import ttk, messagebox
 import threading
 import os
 import sys
+from datetime import datetime
 
 # 确保项目根目录在 sys.path 中
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,22 +27,34 @@ if _PROJECT_ROOT not in sys.path:
 from src.gui.config_manager import ConnectionConfigManager
 
 
-class AccountCheckboxFrame(ttk.LabelFrame):
-    """账套勾选列表组件"""
+class AccountYearFrame(ttk.LabelFrame):
+    """
+    账套列表组件（每行用年份下拉框替代勾选框）
+    =========================================
+    每个账套一行，包含：
+      - 年份下拉框（从 UA_Period 读取）
+      - 账套号
+      - 账套名称
+    """
 
-    def __init__(self, parent, accounts: list, **kwargs):
+    def __init__(self, parent, accounts: list, years_map: dict[str, list[int]],
+                 default_year: int, **kwargs):
         """
         :param parent: 父容器
         :param accounts: AccountInfo 列表
+        :param years_map: {账套号: [年份列表(降序)]}
+        :param default_year: 默认选中年份
         """
-        super().__init__(parent, text="请选择需生成报表的账套（默认全选）", padding=5, **kwargs)
+        super().__init__(parent, text="请选择每个账套的报表年份", padding=5, **kwargs)
         self.accounts = accounts
-        self._checkboxes: list[ttk.Checkbutton] = []
-        self._vars: list[tk.BooleanVar] = []
+        self.years_map = years_map
+        self.default_year = default_year
+        self._combos: list[ttk.Combobox] = []
+        self._year_vars: list[tk.StringVar] = []
         self._build_ui()
 
     def _build_ui(self):
-        """构建勾选列表界面"""
+        """构建账套列表界面"""
         # 使用 Canvas + Scrollbar 实现滚动
         canvas = tk.Canvas(self, highlightthickness=0, height=200)
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
@@ -55,45 +68,50 @@ class AccountCheckboxFrame(ttk.LabelFrame):
         canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        # 全选/取消全选按钮
-        btn_frame = ttk.Frame(scroll_frame)
-        btn_frame.pack(fill="x", pady=(0, 5))
-
-        def select_all():
-            for v in self._vars:
-                v.set(True)
-
-        def deselect_all():
-            for v in self._vars:
-                v.set(False)
-
-        ttk.Button(btn_frame, text="全选", width=6, command=select_all).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="取消全选", width=8, command=deselect_all).pack(side="left", padx=2)
-        ttk.Label(btn_frame, text=f"共 {len(self.accounts)} 个账套").pack(side="right", padx=5)
-
         # 表头
         header = ttk.Frame(scroll_frame)
         header.pack(fill="x", pady=2)
-        ttk.Label(header, text="  选择", width=6, anchor="w", font=("微软雅黑", 9, "bold")).pack(side="left")
-        ttk.Label(header, text="账套号", width=10, anchor="w", font=("微软雅黑", 9, "bold")).pack(side="left")
-        ttk.Label(header, text="账套名称", width=30, anchor="w", font=("微软雅黑", 9, "bold")).pack(side="left", fill="x")
+        ttk.Label(header, text="  年份", width=10, anchor="w",
+                  font=("微软雅黑", 9, "bold")).pack(side="left")
+        ttk.Label(header, text="账套号", width=10, anchor="w",
+                  font=("微软雅黑", 9, "bold")).pack(side="left")
+        ttk.Label(header, text="账套名称", width=30, anchor="w",
+                  font=("微软雅黑", 9, "bold")).pack(side="left", fill="x")
 
         ttk.Separator(scroll_frame, orient="horizontal").pack(fill="x", pady=2)
 
-        # 逐行添加账套勾选框
+        # 逐行添加账套（年份下拉框 + 账套号 + 账套名称）
         for acc in self.accounts:
-            var = tk.BooleanVar(value=True)  # 默认全选
             row_frame = ttk.Frame(scroll_frame)
             row_frame.pack(fill="x", pady=1)
 
-            cb = ttk.Checkbutton(row_frame, variable=var, text="")
-            cb.pack(side="left", padx=(5, 2))
+            # 年份下拉框
+            year_var = tk.StringVar()
+            # 获取该账套对应的年份列表
+            years = self.years_map.get(acc.cAcc_Id, [])
+            year_strings = [str(y) for y in years] if years else [str(self.default_year)]
 
-            ttk.Label(row_frame, text=acc.cAcc_Id, width=10, anchor="w").pack(side="left")
-            ttk.Label(row_frame, text=acc.cAcc_Name, anchor="w").pack(side="left", fill="x", padx=2)
+            combo = ttk.Combobox(
+                row_frame, textvariable=year_var,
+                values=year_strings, width=8, state="readonly"
+            )
+            # 确定默认值
+            default_str = str(self.default_year)
+            if default_str in year_strings:
+                combo.set(default_str)
+            elif year_strings:
+                combo.set(year_strings[0])
+            combo.pack(side="left", padx=(5, 2))
 
-            self._checkboxes.append(cb)
-            self._vars.append(var)
+            # 账套号
+            ttk.Label(row_frame, text=acc.cAcc_Id, width=10,
+                      anchor="w").pack(side="left")
+            # 账套名称
+            ttk.Label(row_frame, text=acc.cAcc_Name,
+                      anchor="w").pack(side="left", fill="x", padx=2)
+
+            self._combos.append(combo)
+            self._year_vars.append(year_var)
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -104,15 +122,20 @@ class AccountCheckboxFrame(ttk.LabelFrame):
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-    def get_selected_accounts(self) -> list:
+    def get_selected_items(self) -> list[tuple]:
         """
-        获取用户勾选的所有账套
-        :return: 选中的 AccountInfo 列表
+        获取每个账套对应的选中年份
+        :return: [(AccountInfo, 年份int), ...]
         """
-        return [
-            acc for acc, var in zip(self.accounts, self._vars)
-            if var.get()
-        ]
+        result = []
+        for acc, var in zip(self.accounts, self._year_vars):
+            year_str = var.get()
+            try:
+                year = int(year_str)
+            except (ValueError, TypeError):
+                continue
+            result.append((acc, year))
+        return result
 
 
 class MainWindow:
@@ -121,8 +144,8 @@ class MainWindow:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("分店财务报表汇总工具 v2.0")
-        self.root.geometry("600x520")
-        self.root.minsize(560, 460)
+        self.root.geometry("640x520")
+        self.root.minsize(600, 460)
 
         # 尝试设置图标（可选）
         try:
@@ -140,9 +163,10 @@ class MainWindow:
         y = (sh - h) // 2
         self.root.geometry(f"+{x}+{y}")
 
-        # 全局状态（DatabaseConnector 在后台线程延迟导入，此处用 object）
+        # 全局状态
         self._db_connector = None
         self._all_accounts: list = []
+        self._years_map: dict[str, list[int]] = {}
         self._is_connected: bool = False
 
         # 构建UI
@@ -221,21 +245,22 @@ class MainWindow:
         )
         self.placeholder_label.pack(expand=True, fill="both")
 
-        # 账套勾选框容器（初始隐藏）
+        # 账套年份选择框容器（初始隐藏）
         self.account_inner_frame = ttk.Frame(self.account_frame)
-        self.account_checkbox_frame: AccountCheckboxFrame | None = None
+        self.account_year_frame: AccountYearFrame | None = None
 
     def _build_action_panel(self):
         """构建操作按钮面板"""
         action_frame = ttk.Frame(self.root, padding=6)
         action_frame.pack(fill="x", padx=8, pady=(0, 6))
 
+        # ---- 主按钮：完整报表生成 ----
         self.btn_generate = ttk.Button(
             action_frame, text="生成合并汇总报表", width=22,
             command=self._generate_report,
             state="disabled"
         )
-        self.btn_generate.pack(side="left", padx=(0, 10))
+        self.btn_generate.pack(side="left", padx=(0, 6))
 
         self.btn_cancel = ttk.Button(
             action_frame, text="取消", width=8,
@@ -261,6 +286,20 @@ class MainWindow:
         self.status_bar.pack(side="bottom", fill="x")
 
     # ==================== 逻辑方法 ====================
+
+    @staticmethod
+    def _get_default_year() -> int:
+        """
+        根据当前日期确定默认年份：
+        - 1月或2月 → 上一年
+        - 3月~12月 → 当年
+        """
+        today = datetime.now()
+        month = today.month
+        if month <= 2:
+            return today.year - 1
+        else:
+            return today.year
 
     def _load_saved_config(self):
         """加载上次保存的连接配置"""
@@ -303,13 +342,13 @@ class MainWindow:
 
     def _connect_worker(self, server: str, username: str, password: str):
         """
-        后台线程：连接数据库并查询账套
+        后台线程：连接数据库并查询账套和年份映射
         """
         try:
             from src.database.connector import DatabaseConnector
             from src.database.ufsystem import UFSystemQuerier
 
-            config = {
+            db_config = {
                 "server": server,
                 "port": 1433,
                 "username": username,
@@ -318,7 +357,7 @@ class MainWindow:
                 "charset": "GBK",
             }
 
-            connector = DatabaseConnector(config)
+            connector = DatabaseConnector(db_config)
             # 尝试连接 UFSystem 公共数据库
             connector.connect("UFSystem")
             self._db_connector = connector
@@ -332,6 +371,10 @@ class MainWindow:
                 acc for acc in all_accounts
                 if acc.cAcc_Id not in ("998", "999")
             ]
+
+            # 批量查询所有账套的年份映射（UA_Period 表）
+            # 返回 {账套号: [年份列表(降序)]}
+            self._years_map = querier.get_all_account_years_map()
 
             # 主线程更新UI
             self.root.after(0, self._on_connect_success)
@@ -351,15 +394,22 @@ class MainWindow:
             w.destroy()
         self.account_inner_frame.pack(fill="both", expand=True)
 
-        self.account_checkbox_frame = AccountCheckboxFrame(
-            self.account_inner_frame, self._all_accounts
+        # 计算默认年份
+        default_year = self._get_default_year()
+
+        # 创建带年份下拉框的账套列表
+        self.account_year_frame = AccountYearFrame(
+            self.account_inner_frame,
+            self._all_accounts,
+            self._years_map,
+            default_year
         )
-        self.account_checkbox_frame.pack(fill="both", expand=True)
+        self.account_year_frame.pack(fill="both", expand=True)
 
         # 更新标签文字
-        self.account_frame.configure(text="账套列表（请勾选需生成报表的账套）")
+        self.account_frame.configure(text="账套列表（请为每个账套选择报表年份）")
 
-        # 启用生成按钮
+        # ---- 启用生成按钮 ----
         self.btn_generate.config(state="normal")
         self.btn_generate.focus_set()
 
@@ -380,29 +430,25 @@ class MainWindow:
 
     def _on_enter_global(self, event):
         """
-        全局回车键处理：
-        - 如果账套列表已加载且有焦点在列表上，选中确定后跳到生成按钮
-        - 如果是生成按钮获得焦点，执行生成
+        全局回车键处理
         """
         focused = self.root.focus_get()
 
-        # 如果焦点在账套列表区域且已连接，转到生成按钮
         if self._is_connected and self.btn_generate.cget("state") == "normal":
-            # 检查焦点是否在勾选框列表内
-            if isinstance(focused, ttk.Checkbutton) or isinstance(focused, ttk.Button) or isinstance(focused, ttk.Entry):
+            if isinstance(focused, ttk.Combobox) or isinstance(focused, ttk.Button) or isinstance(focused, ttk.Entry):
                 pass  # 让默认行为处理
             self.btn_generate.focus_set()
             return "break"
 
     def _generate_report(self):
         """生成合并汇总报表"""
-        if not self._is_connected or not self.account_checkbox_frame:
+        if not self._is_connected or not self.account_year_frame:
             messagebox.showwarning("提示", "请先连接数据库")
             return
 
-        selected = self.account_checkbox_frame.get_selected_accounts()
-        if not selected:
-            messagebox.showwarning("提示", "请至少勾选一个账套")
+        items = self.account_year_frame.get_selected_items()
+        if not items:
+            messagebox.showwarning("提示", "账套列表为空，请检查数据库")
             return
 
         # 禁用操作按钮，显示进度
@@ -410,94 +456,113 @@ class MainWindow:
         self.btn_cancel.config(state="disabled")
         self.progress.pack(side="left", padx=(20, 0))
         self.progress.start()
-        self._set_status(f"正在生成报表，共 {len(selected)} 个账套...")
+        self._set_status(f"正在生成报表框架，共 {len(items)} 个账套...")
 
         # 后台执行
         thread = threading.Thread(
             target=self._generate_worker,
-            args=(selected,),
+            args=(items,),
             daemon=True
         )
         thread.start()
 
-    def _generate_worker(self, selected_accounts: list):
+    def _generate_worker(self, items: list[tuple]):
         """
-        后台线程：生成报表
+        后台线程：生成报表框架雏形
+        每个账套使用各自选择的年份
         """
         try:
-            # 动态构建配置
-            db_config = {
-                "server": self.entry_server.get().strip(),
-                "port": 1433,
-                "username": self.entry_username.get().strip(),
-                "password": self.entry_password.get().strip(),
-                "timeout": 30,
-                "charset": "GBK",
-            }
-
-            config = {
-                "database": db_config,
-                "account_filter": {
-                    "include_ids": [acc.cAcc_Id for acc in selected_accounts],
-                    "exclude_ids": ["998", "999"],
-                },
-                "template": {
-                    "filepath": os.path.join(_PROJECT_ROOT, "分店财务报表模板.xlsx"),
-                    "source_sheet": "三江店报表",
-                    "year_row": 1,
-                    "header_row": 2,
-                    "data_start_row": 3,
-                },
-                "output": {
-                    "dir": os.path.join(_PROJECT_ROOT, "output"),
-                    "filename_prefix": "分店财务报表_",
-                    "file_extension": ".xlsx",
-                    "open_when_done": True,
-                },
-                "report_year": 2024,
-                "report_months": [],
-                "logging": {
-                    "level": "INFO",
-                    "file": os.path.join(_PROJECT_ROOT, "logs", "app.log"),
-                    "console": False,
-                },
-            }
-
             from src.report.builder import ReportBuilder
-            builder = ReportBuilder(config)
-            output_path = builder.build()
 
-            self.root.after(0, self._on_generate_success, output_path)
+            # 按年份分组构建配置，每个年份单独生成一个文件
+            # 先按年份分组
+            year_groups: dict[int, list] = {}
+            for acc, year in items:
+                if year not in year_groups:
+                    year_groups[year] = []
+                year_groups[year].append(acc)
+
+            output_paths = []
+
+            # 为每个年份生成一个文件
+            for report_year, accounts in year_groups.items():
+                db_config = {
+                    "server": self.entry_server.get().strip(),
+                    "port": 1433,
+                    "username": self.entry_username.get().strip(),
+                    "password": self.entry_password.get().strip(),
+                    "timeout": 30,
+                    "charset": "GBK",
+                }
+
+                config = {
+                    "database": db_config,
+                    "account_filter": {
+                        "include_ids": [acc.cAcc_Id for acc in accounts],
+                        "exclude_ids": ["998", "999"],
+                    },
+                    "template": {
+                        "filepath": os.path.join(_PROJECT_ROOT, "分店财务报表模板.xlsx"),
+                        "source_sheet": "sheet",
+                        "year_row": 1,
+                        "header_row": 2,
+                        "data_start_row": 3,
+                    },
+                    "output": {
+                        "dir": os.path.join(_PROJECT_ROOT, "output"),
+                        "filename_prefix": "分店财务报表_",
+                        "file_extension": ".xlsx",
+                        "open_when_done": True,
+                    },
+                    "report_year": report_year,
+                    "report_months": [],
+                    "logging": {
+                        "level": "INFO",
+                        "file": os.path.join(_PROJECT_ROOT, "logs", "app.log"),
+                        "console": False,
+                    },
+                }
+
+                builder = ReportBuilder(config)
+                output_path = builder.build_framework(accounts=accounts)
+                output_paths.append(output_path)
+
+            self.root.after(0, self._on_generate_success, output_paths)
 
         except Exception as e:
             self.root.after(0, self._on_generate_failed, str(e))
 
-    def _on_generate_success(self, output_path: str):
-        """生成成功"""
+    def _on_generate_success(self, output_paths: list[str]):
+        """框架生成成功"""
         self.progress.stop()
         self.progress.pack_forget()
         self.btn_generate.config(state="normal")
         self.btn_cancel.config(state="normal")
-        self._set_status(f"报表生成完成: {output_path}")
+
+        count = len(output_paths)
+        path_info = "\n".join(output_paths)
+        self._set_status(f"报表框架生成完成，共 {count} 个文件")
 
         result = messagebox.askyesno(
             "生成成功",
-            f"✅ 合并汇总报表生成成功！\n\n文件路径：{output_path}\n\n是否立即打开文件？"
+            f"✅ 报表框架生成成功！\n\n"
+            f"共生成 {count} 个文件：\n{path_info}\n\n"
+            f"是否立即打开最后一个文件预览？"
         )
-        if result:
+        if result and output_paths:
             try:
-                os.startfile(output_path)
+                os.startfile(output_paths[-1])
             except Exception:
                 pass
 
     def _on_generate_failed(self, error_msg: str):
-        """生成失败"""
+        """框架生成失败"""
         self.progress.stop()
         self.progress.pack_forget()
         self.btn_generate.config(state="normal")
         self.btn_cancel.config(state="normal")
-        self._set_status("报表生成失败")
-        messagebox.showerror("生成失败", f"报表生成过程中发生错误：\n{error_msg}")
+        self._set_status("报表框架生成失败")
+        messagebox.showerror("生成失败", f"报表框架生成过程中发生错误：\n{error_msg}")
 
     def _set_connection_ui_enabled(self, enabled: bool):
         """启用/禁用连接面板控件"""
