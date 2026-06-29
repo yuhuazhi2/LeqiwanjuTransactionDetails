@@ -273,9 +273,9 @@ class MainWindow:
             action_frame, mode="indeterminate", length=150
         )
 
-        # 生成按钮的快捷键：先绑定到窗口
-        self.root.bind("<Return>", self._on_enter_global)
-        self.root.bind("<KP_Enter>", self._on_enter_global)
+        # 生成按钮的快捷键：使用 bind_all 确保焦点在 Canvas/Frame 内时也能触发
+        self.root.bind_all("<Return>", self._on_enter_global)
+        self.root.bind_all("<KP_Enter>", self._on_enter_global)
 
     def _build_status_bar(self):
         """构建底部状态栏"""
@@ -409,8 +409,9 @@ class MainWindow:
         # 更新标签文字
         self.account_frame.configure(text="账套列表（请为每个账套选择报表年份）")
 
-        # ---- 启用生成按钮 ----
+        # ---- 启用生成按钮，并将焦点移到"生成合并汇总报表"按钮 ----
         self.btn_generate.config(state="normal")
+        # 焦点移到"生成合并汇总报表"按钮，这样用户可以立即按回车键执行生成
         self.btn_generate.focus_set()
 
         # 更新状态栏
@@ -430,15 +431,24 @@ class MainWindow:
 
     def _on_enter_global(self, event):
         """
-        全局回车键处理
+        全局回车键处理：
+        - 已连接 + 生成按钮可用时：直接触发生成（除非焦点在年份下拉框中）
+        - 未连接时：让各输入框自己的 <Return> 处理
+        - 生成过程中：不处理
         """
-        focused = self.root.focus_get()
+        if not self._is_connected:
+            return
+        if self.btn_generate.cget("state") != "normal":
+            return
 
-        if self._is_connected and self.btn_generate.cget("state") == "normal":
-            if isinstance(focused, ttk.Combobox) or isinstance(focused, ttk.Button) or isinstance(focused, ttk.Entry):
-                pass  # 让默认行为处理
-            self.btn_generate.focus_set()
-            return "break"
+        # 如果焦点在 Combobox（年份下拉框）上，不干预——让下拉框正常选择
+        focused = self.root.focus_get()
+        if isinstance(focused, ttk.Combobox):
+            return
+
+        # 直接触发生成，不需要判断焦点位置
+        self._generate_report()
+        return "break"
 
     def _generate_report(self):
         """生成合并汇总报表"""

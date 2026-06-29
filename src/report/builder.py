@@ -260,6 +260,27 @@ class ReportBuilder:
             except Exception as e:
                 logger.warning(f"  {sheet_name} 列调整失败: {e}，使用默认列结构")
 
+        # ---- 步骤5.6：根据各账套 code 表的 5101 科目，动态调整行结构 ----
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]
+            if sheet_name not in self._wb.sheetnames:
+                continue
+            ws = self._wb[sheet_name]
+
+            # 获取该账套对应的年度
+            year_str = ""
+            if account_years and acc.cAcc_Id in account_years:
+                year_str = str(account_years[acc.cAcc_Id])
+            if not year_str:
+                continue  # 无年度信息，跳过行调整
+
+            # 构建数据库名
+            db_name = f"UFDATA_{acc.cAcc_Id.zfill(3)}_{year_str}"
+            try:
+                self._adjust_sheet_subject_rows(ws, db_name)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 行调整失败: {e}，使用默认行结构")
+
         # ---- 步骤6：保存工作簿到输出目录 ----
         output_path = self._save_framework_workbook()
 
@@ -384,6 +405,107 @@ class ReportBuilder:
 
         if months_to_remove or months_to_add:
             logger.info(f"    列调整完成: 删除{len(months_to_remove)}列, 新增{added_count}列")
+
+    # ================================================================
+    # _adjust_sheet_subject_rows — 根据 code 表的 5101 科目调整行结构（V2.2 新增）
+    # ================================================================
+    # 功能说明：
+    #   模板中 A5=销售业绩，A10=主营业务成本。
+    #   根据各账套 code 表中 ccode 开头为 5101 的 6 位数字科目列表，
+    #   动态调整 A5 与 A10 之间的行：
+    #   - 先删除 A5 与 A10 之间原有的全部行（原模板中的渠道明细行）
+    #   - 再根据 5101 科目数量插入对应行数
+    #   - 每行的 A 列填入对应科目的 ccode_name
+    # ================================================================
+
+    def _adjust_sheet_subject_rows(self, ws, db_name: str):
+        """
+        根据指定账套 code 表中 5101 开头的科目列表，
+        动态调整工作表中 A5（销售业绩）与 A10（主营业务成本）之间的行。
+
+        :param ws: 目标工作表
+        :param db_name: 账套数据库名，如 UFDATA_007_2024
+        """
+        # ---- 1. 查询该账套的 5101 科目列表 ----
+        revenue_subjects = self.extractor.get_revenue_subjects_from_code(db_name)
+        target_count = len(revenue_subjects)
+
+        # 固定行号（模板中 A5=销售业绩，A10=主营业务成本）
+        REVENUE_ROW = 5          # A5：销售业绩
+        COST_ROW = 10            # A10：主营业务成本
+
+        # ---- 2. 删除 A5 与 A10 之间的现有全部行（行6~行9） ----
+        rows_to_remove = list(range(REVENUE_ROW + 1, COST_ROW))  # [6,7,8,9]
+        for row_idx in sorted(rows_to_remove, reverse=True):
+            ws.delete_rows(row_idx, 1)
+            logger.debug(f"    删除第 {row_idx} 行（调整成本明细区域）")
+
+        # 删除行后，A10 主营业务成本上移，新位置变为 A6
+        current_cost_row = REVENUE_ROW + 1  # 删除后主营业务成本在 A6
+
+        # ---- 3. 插入 5101 科目行（在"主营业务成本"行之前插入） ----
+        if target_count > 0:
+            logger.info(
+                f"    插入 {target_count} 行 5101 科目："
+                f"{[s['ccode_name'] for s in revenue_subjects]}"
+            )
+            for i, subject in enumerate(revenue_subjects):
+                # 每次在当前主营业务成本行位置插入新行
+                insert_row = current_cost_row
+                ws.insert_rows(insert_row, 1)
+
+                # 在新行 A 列填入科目名称（前加缩进空格，与模板中渠道明细行风格一致）
+                cell = ws.cell(insert_row, 1)
+                cell.value = f" {subject['ccode_name']}"
+                # 复制样式：从上一行 A 列复制字体、边框、对齐、填充
+                prev_row = insert_row - 1
+                if prev_row >= 1:
+                    prev_cell = ws.cell(prev_row, 1)
+                    try:
+                        if prev_cell.font:
+                            cell.font = copy(prev_cell.font)
+                    except Exception:
+                        pass
+                    try:
+                        if prev_cell.border:
+                            cell.border = copy(prev_cell.border)
+                    except Exception:
+                        pass
+                    try:
+                        if prev_cell.alignment:
+                            cell.alignment = copy(prev_cell.alignment)
+                    except Exception:
+                        pass
+                    try:
+                        if prev_cell.fill and prev_cell.fill.fill_type:
+                            cell.fill = copy(prev_cell.fill)
+                    except Exception:
+                        pass
+
+                # ---- 为新插入行的其余全部数据列（B列起）加上细线边框 ----
+                # 先找到"年度合计"列位置，只应用到合计列为止，避免合计列右侧多出边框
+                total_col = ws.max_column  # 默认上限
+                for col in range(1, ws.max_column + 1):
+                    for check_row in (1, 2):
+                        cell_val = ws.cell(check_row, col).value
+                        cell_str = str(cell_val).strip() if cell_val else ""
+                        if "合计" in cell_str or "汇总" in cell_str:
+                            total_col = col
+                            break
+                    else:
+                        continue
+                    break
+                for col_idx in range(2, total_col + 1):
+                    data_cell = ws.cell(insert_row, col_idx)
+                    try:
+                        data_cell.border = copy(self.THIN_BORDER)
+                    except Exception:
+                        pass
+
+                current_cost_row += 1
+        else:
+            logger.info(f"    该账套无 5101 科目，不插入明细行")
+
     def build(self) -> str:
         """
         执行完整的报表生成流程

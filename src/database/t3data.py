@@ -11,8 +11,11 @@ T3 核心表结构（SQL2008R2 版本）：
   - GL_AccSum       : 科目总账（按科目+月份汇总）
 """
 
+import logging
 from typing import Optional
 from src.database.connector import DatabaseConnector
+
+logger = logging.getLogger(__name__)
 
 
 class T3DataExtractor:
@@ -207,3 +210,45 @@ class T3DataExtractor:
             gross[m] = total_revenue.get(m, 0) - cost_data.get(m, 0)
 
         return gross
+
+    # ================================================================
+    # 科目表 Code 查询方法（用于动态行调整）
+    # ================================================================
+    def get_revenue_subjects_from_code(self, db_name: str) -> list[dict]:
+        """
+        从 code 表查询所有 ccode 以 5101 开头的 6 位科目。
+        这些科目将作为"销售业绩"与"主营业务成本"之间的行显示。
+
+        T3 Code 表结构：
+          ccode       VARCHAR(40)   - 科目编码
+          ccode_name  VARCHAR(60)   - 科目名称
+
+        :param db_name: 账套数据库名，如 UFDATA_001_2024
+        :return: [{ccode, ccode_name}, ...]，按 ccode 升序排列
+        """
+        # 注意：必须使用完全限定的表名 [{db_name}].dbo.Code，
+        # 因为 connector.connect() 复用了已有连接，execute_query 的 database 参数
+        # 在已有连接时不会切换到目标数据库。
+        sql = f"""
+            SELECT ccode, ccode_name
+            FROM [{db_name}].dbo.Code
+            WHERE ccode LIKE '5101%'
+              AND LEN(ccode) = 6
+              AND ccode NOT LIKE '%[^0-9]%'
+            ORDER BY ccode
+        """
+        try:
+            rows = self.connector.execute_query(sql, database=db_name)
+            # 额外过滤：确保 ccode 确实是6位纯数字
+            result = []
+            for row in rows:
+                code = str(row.get("ccode", "")).strip()
+                name = str(row.get("ccode_name", "")).strip()
+                if len(code) == 6 and code.isdigit() and code.startswith("5101"):
+                    result.append({"ccode": code, "ccode_name": name})
+            logger.info(f"  Code表查询 5101 科目: 共 {len(result)} 条: "
+                        f"{[r['ccode_name'] for r in result]}")
+            return result
+        except Exception as e:
+            logger.warning(f"  查询 Code 表（5101科目）失败: {e}")
+            return []
