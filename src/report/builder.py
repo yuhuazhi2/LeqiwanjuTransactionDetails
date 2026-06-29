@@ -10,6 +10,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from copy import copy
+
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
@@ -143,12 +145,14 @@ class ReportBuilder:
     #     不填充任何财务数据，供客户预览效果
     # ================================================================
 
-    def build_framework(self, accounts: list = None) -> str:
+    def build_framework(self, accounts: list = None,
+                        account_years: dict[str, int] = None) -> str:
         """
         生成报表框架雏形（V2.0新增）
         ========================
         功能：以模板为基础，为每个合规账套复制一个表页，
-             在A2位置用红色字体填入账套名称，形成报表初步框架。
+             在A2位置用红色字体填入"账套名称+年度"，
+             形成报表初步框架。
              生成的工作簿不保留模板原sheet，直接按账套名称命名各表页。
 
         流程（基于 openpyxl.copy_worksheet 在同一工作簿内复制）：
@@ -157,12 +161,15 @@ class ReportBuilder:
           3. 对每个账套，用 copy_worksheet() 复制模板sheet，
              再以账套名重命名新sheet
           4. 所有账套复制完毕后，删除原始的模板sheet
-          5. 在每个新sheet的 A2 单元格写入账套名称并设为红色字体
+          5. 在每个新sheet的 A2 单元格写入"账套名称+年度"并设为红色字体
           6. 保存到 output/ 目录
 
         参数:
             accounts: 指定的账套列表（可选），
                       不传则自动查询全部合规账套（过滤 998/999）
+            account_years: 账套年份映射 {账套号: 年度}（可选），
+                           指定每个账套对应的报表年份，用于A2显示。
+                           未传入时，A2只显示账套名称。
 
         返回:
             str: 生成的Excel文件绝对路径
@@ -205,17 +212,53 @@ class ReportBuilder:
         if template_sheet_name in self._wb.sheetnames:
             del self._wb[template_sheet_name]
 
-        # ---- 步骤5：遍历每个账套sheet，在A2填入账套名称并设红色字体 ----
+        # ---- 步骤5：遍历每个账套sheet，在A2填入"账套名称+年度"并设红色字体 ----
         for acc in accounts:
             sheet_name = acc.sheet_name[:31]
             if sheet_name in self._wb.sheetnames:
                 ws = self._wb[sheet_name]
                 a2_cell = ws.cell(row=2, column=1)
-                a2_cell.value = acc.cAcc_Name
+
+                # 构建A2显示内容：账套名称 + 年度
+                year_str = ""
+                if account_years and acc.cAcc_Id in account_years:
+                    year_str = str(account_years[acc.cAcc_Id])
+                if year_str:
+                    a2_cell.value = f"{acc.cAcc_Name} {year_str}"
+                else:
+                    a2_cell.value = acc.cAcc_Name
+
                 a2_cell.font = Font(
                     name="微软雅黑", size=11, bold=True,
                     color="FF0000"  # 红色
                 )
+
+        # ---- 步骤5.5：根据各账套数据库已结账月份，动态调整列结构 ----
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]
+            if sheet_name not in self._wb.sheetnames:
+                continue
+            ws = self._wb[sheet_name]
+
+            # 获取该账套对应的年度
+            year_str = ""
+            if account_years and acc.cAcc_Id in account_years:
+                year_str = str(account_years[acc.cAcc_Id])
+            if not year_str:
+                continue  # 无年度信息，跳过列调整
+
+            # 构建数据库名（重新计算，不依赖 acc.db_name 缓存的值）
+            # 用友T3数据库命名规则：UFDATA_账套号_年度
+            db_name = f"UFDATA_{acc.cAcc_Id.zfill(3)}_{year_str}"  # 如 UFDATA_007_2026
+            try:
+                closed_months = self.connector.get_closed_periods(db_name)
+                if closed_months:
+                    logger.info(f"  {sheet_name}: 已结账月份 {closed_months}，调整列结构")
+                    self._adjust_sheet_columns(ws, closed_months)
+                else:
+                    logger.info(f"  {sheet_name}: 无已结账月份记录，保持默认列")
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 列调整失败: {e}，使用默认列结构")
 
         # ---- 步骤6：保存工作簿到输出目录 ----
         output_path = self._save_framework_workbook()
@@ -224,6 +267,123 @@ class ReportBuilder:
         logger.info(f"文件路径: {output_path}")
         return output_path
 
+    # ================================================================
+    # _adjust_sheet_columns — 根据已结账月份调整工作表列结构（V2.1 新增）
+    # ================================================================
+    # 功能说明：
+    #   根据 gl_mend 表查询到的已结账月份列表，动态调整工作表的月份列：
+    #   - 已结账月份存在的列 → 保留
+    #   - 已结账月份不存在的多余月份列 → 删除该列
+    #   - 新增已结账月份但模板中没有的列 → 在"年度合计"列前插入
+    #
+    # 使用 openpyxl 原生 delete_cols / insert_cols 操作列，自动维护
+    # 右侧所有单元格的偏移。
+    # ================================================================
+
+    def _adjust_sheet_columns(self, ws, closed_months: list[int]):
+        """
+        根据已结账月份列表，动态调整单张工作表的月份列结构。
+
+        策略：
+          1. 扫描第1行（列标题），建立 {月份: 列号} 映射，找到"年度合计"列
+          2. 计算需要删除的多余月份列 和 需要新增的月份列
+          3. 删除多余列（从右向左删除，避免列号偏移）
+          4. 缺少的月份列在"年度合计"前插入
+
+        :param ws: 目标工作表
+        :param closed_months: 已结账月份列表（升序），如 [1,2,3,4,5]
+        """
+        month_map = {
+            "1月": 1, "2月": 2, "3月": 3, "4月": 4,
+            "5月": 5, "6月": 6, "7月": 7, "8月": 8,
+            "9月": 9, "10月": 10, "11月": 11, "12月": 12,
+        }
+
+        # ---- 1. 分析当前列结构：找出月份列和年度合计列 ----
+        # 模板的列标题在第2行（第1行为空）
+        existing_months = {}  # {月份: 列号}
+        total_col = None      # "年度合计"列号
+
+        for col_idx in range(1, ws.max_column + 1):
+            # 先检查第1行，如果为空则检查第2行
+            cell_val = ws.cell(1, col_idx).value
+            if cell_val is None:
+                cell_val = ws.cell(2, col_idx).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+
+            if "合计" in cell_str or "汇总" in cell_str:
+                total_col = col_idx
+            elif cell_str in month_map:
+                month = month_map[cell_str]
+                existing_months[month] = col_idx
+
+        if total_col is None or not existing_months:
+            logger.warning("  _adjust_sheet_columns: 无法定位月份列或合计列，跳过调整")
+            return
+
+        # ---- 2. 计算需要删除/新增的月份 ----
+        target_months = sorted(set(closed_months))  # 已结账月份（升序）
+        current_months = sorted(existing_months.keys())  # 当前月份（升序）
+
+        months_to_remove = [m for m in current_months if m not in target_months]
+        months_to_add = [m for m in target_months if m not in current_months]
+
+        logger.debug(f"    当前月份列: {current_months}, 目标: {target_months}")
+        logger.debug(f"    需删除列: {months_to_remove}, 需新增: {months_to_add}")
+
+        # ---- 3. 删除多余月份列（从右向左删，避免偏移） ----
+        for month in sorted(months_to_remove, reverse=True):
+            col_idx = existing_months[month]
+            logger.debug(f"    删除列: 第{col_idx}列 ({month}月)")
+            ws.delete_cols(col_idx, 1)
+            # 删除后更新 existing_months 和 total_col 的列号
+            total_col = total_col - 1 if total_col > col_idx else total_col
+            # 更新 existing_months 中所有在删除列右侧的列号
+            for m, c in list(existing_months.items()):
+                if c > col_idx:
+                    existing_months[m] = c - 1
+
+        # ---- 4. 在"年度合计"列前插入缺少的月份列 ----
+        # 先确定目标月份列应该按什么顺序插入到合计列之前
+        # 从合计列向左，需要补全从1月到12月中缺失的月份
+        added_count = 0
+        for month in sorted(months_to_add):
+            # 在 total_col 位置插入空列（原有列向右移）
+            insert_pos = total_col
+            logger.debug(f"    插入列: 在第{insert_pos}列前 ({month}月)")
+            ws.insert_cols(insert_pos, 1)
+            # 设置新列标题为月份（模板列标题在第2行，所以写入row2）
+            # 同时写入row1以保持一致性
+            for row_num in (1, 2):
+                new_cell = ws.cell(row_num, insert_pos)
+                new_cell.value = f"{month}月" if row_num == 2 else None
+                if row_num == 2:
+                    new_cell.font = self.HEADER_FONT
+                    new_cell.alignment = Alignment(horizontal="center")
+                    new_cell.border = self.THIN_BORDER
+            # ---- 复制数据行的背景色和边框：从左侧列（前一个月列）复制到新列 ----
+            # insert_cols 将原有列右移，新列在 insert_pos，左侧列在 insert_pos - 1
+            left_col = insert_pos - 1
+            for row_num in range(3, ws.max_row + 1):
+                left_cell = ws.cell(row_num, left_col)
+                new_cell = ws.cell(row_num, insert_pos)
+                # 复制填充（背景色）
+                try:
+                    if left_cell.fill and left_cell.fill.fill_type:
+                        new_cell.fill = copy(left_cell.fill)
+                except Exception:
+                    pass
+                # 复制边框
+                try:
+                    if left_cell.border:
+                        new_cell.border = copy(left_cell.border)
+                except Exception:
+                    pass
+            total_col += 1  # 合计列右移一位
+            added_count += 1
+
+        if months_to_remove or months_to_add:
+            logger.info(f"    列调整完成: 删除{len(months_to_remove)}列, 新增{added_count}列")
     def build(self) -> str:
         """
         执行完整的报表生成流程

@@ -121,6 +121,8 @@ class UFSystemQuerier:
         用友T3标准命名规则：UFDATA_账套号_年度
         注：实际年度需从账套的年度信息中获取
         """
+        return f"UFDATA_{acc_id.zfill(3)}"
+
     def get_all_account_years_map(self) -> dict[str, list[int]]:
         """
         批量查询所有账套的可用年份映射
@@ -146,7 +148,6 @@ class UFSystemQuerier:
             result[acc_id].append(year)
         return result
 
-        return f"UFDATA_{acc_id.zfill(3)}"
     def get_account_years(self, acc_id: str) -> list[int]:
         """
         从 UA_Period 表查询指定账套的可用年份

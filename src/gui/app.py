@@ -523,8 +523,13 @@ class MainWindow:
                     },
                 }
 
+                # 构建账套->年份映射 {账套号: 年度}
+                account_years = {acc.cAcc_Id: year for acc, year in items if year == report_year}
                 builder = ReportBuilder(config)
-                output_path = builder.build_framework(accounts=accounts)
+                output_path = builder.build_framework(
+                    accounts=accounts,
+                    account_years=account_years
+                )
                 output_paths.append(output_path)
 
             self.root.after(0, self._on_generate_success, output_paths)

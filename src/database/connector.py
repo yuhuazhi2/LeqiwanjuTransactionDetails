@@ -240,6 +240,30 @@ class DatabaseConnector:
             else:
                 cursor.execute(sql)
 
+    def get_closed_periods(self, db_name: str) -> list[int]:
+        """
+        查询指定账套数据库中已结账的月份（gl_mend 表 bflag=1 的 iperiod 值）
+        :param db_name: 账套数据库名，如 "UFDATA_007_2026"
+        :return: 已结账月份列表（升序），如 [1,2,3,4,5]
+                 iperiod=0（年度结转）不返回
+
+        注意：使用完全限定的表名 [{db_name}].dbo.gl_mend 而非依赖
+        connect() 切换数据库，因为现有连接可能已固定在 UFSystem
+        数据库上，execute_query 的 database 参数在连接已建立
+        时不会生效（connect 方法会复用现有连接）。
+        """
+        sql = f"""
+            SELECT iperiod FROM [{db_name}].dbo.gl_mend
+            WHERE bflag = 1 AND iperiod > 0
+            ORDER BY iperiod ASC
+        """
+        try:
+            rows = self.execute_query(sql, database=db_name)
+            return [row["iperiod"] for row in rows]
+        except Exception as e:
+            logger.warning(f"查询 {db_name}.gl_mend 失败: {e}")
+            return []
+
     def get_databases(self) -> list[str]:
         """获取服务器上所有数据库名称"""
         rows = self.execute_query(
