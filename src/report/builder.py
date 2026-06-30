@@ -44,6 +44,33 @@ class ReportBuilder:
     CURRENCY_FORMAT = '#,##0.00'
 
     # ================================================================
+    # 行背景色配置（用于 build_framework 的 _apply_row_colors）
+    # ================================================================
+    # 各关键行的背景色（柔和的浅色系，便于长时间阅读）
+    FILL_PERFORMANCE = PatternFill(start_color="E8D5F5", end_color="E8D5F5",
+                                   fill_type="solid")       # 业绩完成率 - 浅紫色
+    FILL_TARGET = PatternFill(start_color="D5F5E3", end_color="D5F5E3",
+                              fill_type="solid")            # 目标预算 - 浅绿色
+    FILL_SALES = PatternFill(start_color="D6EAF8", end_color="D6EAF8",
+                             fill_type="solid")             # 销售业绩 - 浅蓝色
+    FILL_COST = PatternFill(start_color="FDEBD0", end_color="FDEBD0",
+                            fill_type="solid")              # 主营业务成本 - 浅橙色
+    FILL_EXPENSE_HEADER = PatternFill(start_color="F9E79F", end_color="F9E79F",
+                                      fill_type="solid")    # 营业/管理/财务费用（标题行）- 深黄色
+    FILL_EXPENSE = PatternFill(start_color="FCF3CF", end_color="FCF3CF",
+                               fill_type="solid")           # 营业/管理/财务费用明细行 - 浅黄色
+    FILL_EXPENSE_ALT = PatternFill(start_color="FEF9E7", end_color="FEF9E7",
+                                   fill_type="solid")       # 费用明细交替色 - 浅米色
+    FILL_RATE = PatternFill(start_color="F2F3F4", end_color="F2F3F4",
+                            fill_type="solid")              # 费用率 - 浅灰色
+    FILL_PROFIT = PatternFill(start_color="AED6F1", end_color="AED6F1",
+                              fill_type="solid")            # 利润 - 中浅蓝色
+    FILL_DIVIDEND = PatternFill(start_color="F5B7B1", end_color="F5B7B1",
+                                fill_type="solid")          # 分红 - 浅粉色
+    FILL_BANK = PatternFill(start_color="D2B4DE", end_color="D2B4DE",
+                            fill_type="solid")              # 银行余额 - 淡紫色
+
+    # ================================================================
     # 模板行标签 → T3科目映射表
     # key: 模板中的行标签（标准化后），value: 数据提取方法
     # 这是核心映射配置，后续可扩展为外部配置文件
@@ -292,6 +319,17 @@ class ReportBuilder:
                 self._adjust_sheet_manage_rows(ws, db_name)
             except Exception as e:
                 logger.warning(f"  {sheet_name} 管理费用明细行调整失败: {e}，使用默认行结构")
+
+        # ---- 步骤5.9：为每个账套工作表设置行背景色（增强可读性） ----
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]
+            if sheet_name not in self._wb.sheetnames:
+                continue
+            ws = self._wb[sheet_name]
+            try:
+                self._apply_row_colors(ws)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 行背景色应用失败: {e}")
 
         # ---- 步骤6：保存工作簿到输出目录 ----
         output_path = self._save_framework_workbook()
@@ -603,17 +641,10 @@ class ReportBuilder:
             cell = ws.cell(insert_row, 1)
             cell.value = f" {subject['ccode_name']}"
 
-            # 复制 A 列样式：从上一行
-            prev_row = insert_row - 1
-            if prev_row >= 1:
-                prev_cell = ws.cell(prev_row, 1)
-                for attr_name in ("font", "border", "alignment", "fill"):
-                    try:
-                        src_attr = getattr(prev_cell, attr_name, None)
-                        if src_attr and (attr_name != "fill" or src_attr.fill_type):
-                            setattr(cell, attr_name, copy(src_attr) if hasattr(src_attr, '__copy__') else copy(src_attr))
-                    except Exception:
-                        pass
+            # 设置 A 列字体为宋体12号加粗（与费用率等标题行一致）
+            cell.font = Font(name="宋体", size=12, bold=True)
+            # A 列加边框（与数据区域统一）
+            cell.border = copy(self.THIN_BORDER)
 
             # B 列到合计列加边框
             for col_idx in range(2, total_col + 1):
@@ -627,7 +658,12 @@ class ReportBuilder:
             # 插入空白行（留一行备用）
             blank_row = current_expense_bottom
             ws.insert_rows(blank_row, 1)
-            # 空白行也加边框
+            # 空白行A列也加边框
+            try:
+                ws.cell(blank_row, 1).border = copy(self.THIN_BORDER)
+            except Exception:
+                pass
+            # 空白行数据列加边框
             for col_idx in range(2, total_col + 1):
                 try:
                     ws.cell(blank_row, col_idx).border = copy(self.THIN_BORDER)
@@ -720,17 +756,10 @@ class ReportBuilder:
             cell = ws.cell(insert_row, 1)
             cell.value = f" {subject['ccode_name']}"
 
-            # 复制 A 列样式：从上一行
-            prev_row = insert_row - 1
-            if prev_row >= 1:
-                prev_cell = ws.cell(prev_row, 1)
-                for attr_name in ("font", "border", "alignment", "fill"):
-                    try:
-                        src_attr = getattr(prev_cell, attr_name, None)
-                        if src_attr and (attr_name != "fill" or src_attr.fill_type):
-                            setattr(cell, attr_name, copy(src_attr) if hasattr(src_attr, '__copy__') else copy(src_attr))
-                    except Exception:
-                        pass
+            # 设置 A 列字体为宋体12号加粗（与费用率等标题行一致）
+            cell.font = Font(name="宋体", size=12, bold=True)
+            # A 列加边框（与数据区域统一）
+            cell.border = copy(self.THIN_BORDER)
 
             # B 列到合计列加边框
             for col_idx in range(2, total_col + 1):
@@ -744,7 +773,12 @@ class ReportBuilder:
             # 插入空白行（留一行备用）
             blank_row = current_manage_bottom
             ws.insert_rows(blank_row, 1)
-            # 空白行也加边框
+            # 空白行A列也加边框
+            try:
+                ws.cell(blank_row, 1).border = copy(self.THIN_BORDER)
+            except Exception:
+                pass
+            # 空白行数据列加边框
             for col_idx in range(2, total_col + 1):
                 try:
                     ws.cell(blank_row, col_idx).border = copy(self.THIN_BORDER)
@@ -753,6 +787,143 @@ class ReportBuilder:
             current_manage_bottom += 1  # 空白行后继续下移
 
         logger.info(f"    管理费用明细行调整完成: 插入 {target_count} 个科目（各间隔一行空白）")
+
+    # ================================================================
+    # _apply_row_colors — 根据 A 列行标签为工作表各行设置背景色（V2.5 新增）
+    # ================================================================
+    # 功能说明：
+    #   在行结构全部调整完毕后，扫描 A 列标签，为特定行分配不同的背景色
+    #   以增强可读性。适用于 build_framework() 流程末尾。
+    #
+    # 颜色规则（按用户要求）：
+    #   - "业绩完成率"               → 浅紫色     (FILL_PERFORMANCE)
+    #   - "目标预算（一档）"         → 浅绿色     (FILL_TARGET)
+    #   - "销售业绩"                 → 浅蓝色     (FILL_SALES)
+    #   - "主营业务成本"             → 浅橙色     (FILL_COST)
+    #   - "营业费用"/"管理费用"/"财务费用"（标题行）→ 深黄色 (FILL_EXPENSE_HEADER)
+    #   - "营业费用"与"管理费用"之间的明细行 → 字符行用浅黄、空行保留原色
+    #   - "管理费用"与"财务费用"之间的明细行 → 同上
+    #   - "费用率"                   → 浅灰色     (FILL_RATE)
+    #   - "利润"                     → 中浅蓝色   (FILL_PROFIT)
+    #   - "分红"/"总分红"            → 浅粉色     (FILL_DIVIDEND)
+    #   - "银行余额"                 → 淡紫色     (FILL_BANK)
+    # ================================================================
+
+    def _apply_row_colors(self, ws):
+        """
+        为工作表的各行（从A列到年度合计列）设置背景色。
+
+        应该在行结构调整（_adjust_sheet_*_rows）全部完成后调用，
+        确保行号已稳定。
+
+        :param ws: 目标工作表
+        """
+        # ---- 1. 找到"年度合计"列位置，只应用到该列为止 ----
+        total_col = ws.max_column
+        for col in range(1, ws.max_column + 1):
+            for check_row in (1, 2):
+                cell_val = ws.cell(check_row, col).value
+                cell_str = str(cell_val).strip() if cell_val else ""
+                if "合计" in cell_str or "汇总" in cell_str:
+                    total_col = col
+                    break
+            else:
+                continue
+            break
+
+        # ---- 2. 建立精确行标签 → 填充色映射表 ----
+        # 注意：A列单元格值可能含前导空格，用 strip() 匹配
+        LABEL_FILL_MAP = {
+            "业绩完成率":         self.FILL_PERFORMANCE,
+            "目标预算（一档）":   self.FILL_TARGET,
+            "销售业绩":           self.FILL_SALES,
+            "主营业务成本":       self.FILL_COST,
+            "费用率":             self.FILL_RATE,
+            "利润":               self.FILL_PROFIT,
+            "利润率":             self.FILL_PROFIT,
+            "分红":               self.FILL_DIVIDEND,
+            "总分红（往年分红万）": self.FILL_DIVIDEND,
+            "投资":               self.FILL_DIVIDEND,
+            "银行余额":           self.FILL_BANK,
+        }
+
+        # ---- 3. 先扫描 A 列，找出三个费用标题行的位置 ----
+        expense_row = None   # "营业费用"行号
+        manage_row = None    # "管理费用"行号
+        finance_row = None   # "财务费用"行号
+
+        for row_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, 1).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str == "营业费用":
+                expense_row = row_idx
+            elif cell_str == "管理费用":
+                manage_row = row_idx
+            elif cell_str == "财务费用":
+                finance_row = row_idx
+            # 三个都找到即可提前结束扫描
+            if expense_row is not None and manage_row is not None and finance_row is not None:
+                break
+
+        logger.debug(f"  _apply_row_colors 定位: 营业费用行{expense_row}, "
+                      f"管理费用行{manage_row}, 财务费用行{finance_row}")
+
+        # ---- 4. 遍历 A 列，应用颜色 ----
+        for row_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, 1).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if not cell_str:
+                continue
+
+            fill = None
+
+            # 4a. 基础映射匹配
+            if cell_str in LABEL_FILL_MAP:
+                fill = LABEL_FILL_MAP[cell_str]
+
+            # 4b. 三大费用标题行：用深黄色（与明细行的浅黄色区分）
+            elif cell_str in ("营业费用", "管理费用", "财务费用"):
+                fill = self.FILL_EXPENSE_HEADER
+
+            # 如果找到填充色，应用到整行
+            if fill is not None:
+                self._apply_row_fill(ws, row_idx, total_col, fill)
+
+        # ---- 5. 处理"营业费用"与"管理费用"之间的明细行（有内容的行设浅黄色，空行保留原色） ----
+        if expense_row is not None and manage_row is not None:
+            for row_idx in range(expense_row + 1, manage_row):
+                cell_val = ws.cell(row_idx, 1).value
+                cell_str = str(cell_val).strip() if cell_val else ""
+                if cell_str:
+                    # 有字符内容的行 → 浅黄色
+                    self._apply_row_fill(ws, row_idx, total_col, self.FILL_EXPENSE)
+                # 空白行不设背景色，保留原样
+
+        # ---- 6. 处理"管理费用"与"财务费用"之间的明细行（有内容的行设浅黄色，空行保留原色） ----
+        if manage_row is not None and finance_row is not None:
+            for row_idx in range(manage_row + 1, finance_row):
+                cell_val = ws.cell(row_idx, 1).value
+                cell_str = str(cell_val).strip() if cell_val else ""
+                if cell_str:
+                    self._apply_row_fill(ws, row_idx, total_col, self.FILL_EXPENSE)
+                # 空白行不设背景色，保留原样
+
+    @staticmethod
+    def _apply_row_fill(ws, row: int, total_col: int, fill: PatternFill):
+        """
+        给指定行的 A 列到 total_col 列设置背景填充色。
+
+        :param ws: 工作表
+        :param row: 行号
+        :param total_col: 最后一列号（含）
+        :param fill: 填充样式
+        """
+        for col_idx in range(1, total_col + 1):
+            cell = ws.cell(row, col_idx)
+            try:
+                cell.fill = copy(fill)
+            except Exception:
+                pass
 
     def build(self) -> str:
         """

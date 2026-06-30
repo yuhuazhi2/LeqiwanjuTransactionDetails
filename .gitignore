@@ -32,6 +32,14 @@ Thumbs.db
 
 # 测试输出
 *.tmp
+test_temp.xlsx
 
-# 一次性分析/验证/辅助脚本
+# 一次性分析/验证/辅助脚本（根目录下的单文件临时脚本）
+/verify_rows.py
+/analyze_rows.py
+/verify_modification.py
+/apply_modification.py
+/modify_template.py
+/check_rows.py
+/test_style_changes.py
 scripts/

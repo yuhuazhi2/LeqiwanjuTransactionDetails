@@ -254,17 +254,24 @@ class MainWindow:
         action_frame = ttk.Frame(self.root, padding=6)
         action_frame.pack(fill="x", padx=8, pady=(0, 6))
 
-        # ---- 主按钮：完整报表生成 ----
-        self.btn_generate = ttk.Button(
+        # ---- 主按钮：完整报表生成（绿色） ----
+        self.btn_generate = tk.Button(
             action_frame, text="生成合并汇总报表", width=22,
             command=self._generate_report,
-            state="disabled"
+            state="disabled",
+            bg="#4CAF50", fg="white", font=("微软雅黑", 9, "bold"),
+            relief="raised", bd=2,
+            activebackground="#45a049", activeforeground="white",
+            disabledforeground="#cccccc"
         )
         self.btn_generate.pack(side="left", padx=(0, 6))
 
-        self.btn_cancel = ttk.Button(
+        self.btn_cancel = tk.Button(
             action_frame, text="取消", width=8,
-            command=self._on_close
+            command=self._on_close,
+            bg="#E53935", fg="white", font=("微软雅黑", 9, "bold"),
+            relief="raised", bd=2,
+            activebackground="#c62828", activeforeground="white"
         )
         self.btn_cancel.pack(side="left")
 
