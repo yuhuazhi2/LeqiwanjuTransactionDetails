@@ -252,3 +252,65 @@ class T3DataExtractor:
         except Exception as e:
             logger.warning(f"  查询 Code 表（5101科目）失败: {e}")
             return []
+
+    def get_expense_subjects_from_code(self, db_name: str) -> list[dict]:
+        """
+        从 code 表查询所有 ccode 以 5501 开头的 6 位科目。
+        这些科目将作为"营业费用"与"管理费用"之间的行显示。
+
+        :param db_name: 账套数据库名，如 UFDATA_001_2024
+        :return: [{ccode, ccode_name}, ...]，按 ccode 升序排列
+        """
+        sql = f"""
+            SELECT ccode, ccode_name
+            FROM [{db_name}].dbo.Code
+            WHERE ccode LIKE '5501%'
+              AND LEN(ccode) = 6
+              AND ccode NOT LIKE '%[^0-9]%'
+            ORDER BY ccode
+        """
+        try:
+            rows = self.connector.execute_query(sql, database=db_name)
+            result = []
+            for row in rows:
+                code = str(row.get("ccode", "")).strip()
+                name = str(row.get("ccode_name", "")).strip()
+                if len(code) == 6 and code.isdigit() and code.startswith("5501"):
+                    result.append({"ccode": code, "ccode_name": name})
+            logger.info(f"  Code表查询 5501 科目: 共 {len(result)} 条: "
+                        f"{[r['ccode_name'] for r in result]}")
+            return result
+        except Exception as e:
+            logger.warning(f"  查询 Code 表（5501科目）失败: {e}")
+            return []
+
+    def get_manage_subjects_from_code(self, db_name: str) -> list[dict]:
+        """
+        从 code 表查询所有 ccode 以 5502 开头的 6 位科目。
+        这些科目将作为"管理费用"与"财务费用"之间的行显示。
+
+        :param db_name: 账套数据库名，如 UFDATA_001_2024
+        :return: [{ccode, ccode_name}, ...]，按 ccode 升序排列
+        """
+        sql = f"""
+            SELECT ccode, ccode_name
+            FROM [{db_name}].dbo.Code
+            WHERE ccode LIKE '5502%'
+              AND LEN(ccode) = 6
+              AND ccode NOT LIKE '%[^0-9]%'
+            ORDER BY ccode
+        """
+        try:
+            rows = self.connector.execute_query(sql, database=db_name)
+            result = []
+            for row in rows:
+                code = str(row.get("ccode", "")).strip()
+                name = str(row.get("ccode_name", "")).strip()
+                if len(code) == 6 and code.isdigit() and code.startswith("5502"):
+                    result.append({"ccode": code, "ccode_name": name})
+            logger.info(f"  Code表查询 5502 科目: 共 {len(result)} 条: "
+                        f"{[r['ccode_name'] for r in result]}")
+            return result
+        except Exception as e:
+            logger.warning(f"  查询 Code 表（5502科目）失败: {e}")
+            return []

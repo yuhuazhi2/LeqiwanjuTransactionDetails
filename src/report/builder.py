@@ -281,6 +281,18 @@ class ReportBuilder:
             except Exception as e:
                 logger.warning(f"  {sheet_name} 行调整失败: {e}，使用默认行结构")
 
+            # ---- 步骤5.7：根据各账套 code 表的 5501 科目，动态调整营业费用明细行结构 ----
+            try:
+                self._adjust_sheet_expense_rows(ws, db_name)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 营业费用行调整失败: {e}，使用默认行结构")
+
+            # ---- 步骤5.8：根据各账套 code 表的 5502 科目，动态调整管理费用与财务费用之间明细行结构 ----
+            try:
+                self._adjust_sheet_manage_rows(ws, db_name)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 管理费用明细行调整失败: {e}，使用默认行结构")
+
         # ---- 步骤6：保存工作簿到输出目录 ----
         output_path = self._save_framework_workbook()
 
@@ -505,6 +517,242 @@ class ReportBuilder:
                 current_cost_row += 1
         else:
             logger.info(f"    该账套无 5101 科目，不插入明细行")
+
+    # ================================================================
+    # _adjust_sheet_expense_rows — 根据 code 表的 5501 科目调整营业费用行结构（V2.3 新增）
+    # ================================================================
+    # 功能说明：
+    #   模板中"营业费用"与"管理费用"之间的行，根据各账套 code 表中
+    #   ccode 开头为 5501 的 6 位数字科目列表动态调整：
+    #   - 先删除"营业费用"与"管理费用"之间原有的全部现有行
+    #   - 再根据 5501 科目列表插入：每个科目一行（填科目名称），
+    #     然后隔一空白行，再插下一个科目，如此交替
+    # ================================================================
+
+    def _adjust_sheet_expense_rows(self, ws, db_name: str):
+        """
+        根据指定账套 code 表中 5501 开头的科目列表，
+        动态调整工作表中"营业费用"与"管理费用"之间的行。
+
+        :param ws: 目标工作表
+        :param db_name: 账套数据库名，如 UFDATA_007_2024
+        """
+        # ---- 1. 查询该账套的 5501 科目列表 ----
+        expense_subjects = self.extractor.get_expense_subjects_from_code(db_name)
+        if not expense_subjects:
+            logger.info("    该账套无 5501 科目，不调整营业费用明细行")
+            return
+        target_count = len(expense_subjects)
+
+        # ---- 2. 扫描 A 列（所有行），找出"营业费用"和"管理费用"的行号 ----
+        expense_row = None   # "营业费用"行号
+        manage_row = None    # "管理费用"行号
+        for row_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, 1).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str == "营业费用":
+                expense_row = row_idx
+            elif cell_str == "管理费用":
+                manage_row = row_idx
+            if expense_row is not None and manage_row is not None:
+                break
+
+        if expense_row is None or manage_row is None:
+            logger.warning("    无法定位'营业费用'或'管理费用'行，跳过营业费用明细行调整")
+            return
+        if manage_row - expense_row <= 1:
+            logger.warning("    '营业费用'与'管理费用'之间无空间，跳过")
+            return
+
+        logger.info(f"    定位: 营业费用行{expense_row}, 管理费用行{manage_row}")
+
+        # ---- 3. 删除两者之间的现有全部行 ----
+        # 删除范围: expense_row+1 到 manage_row-1
+        rows_to_remove = list(range(expense_row + 1, manage_row))
+        for row_idx in sorted(rows_to_remove, reverse=True):
+            ws.delete_rows(row_idx, 1)
+            logger.debug(f"    删除第 {row_idx} 行（营业费用明细区域）")
+
+        # 删除后，"管理费用"行上移
+        current_expense_bottom = expense_row + 1  # 此时"管理费用"在这里
+
+        # ---- 4. 查找合计列位置（用于加边框） ----
+        total_col = ws.max_column
+        for col in range(1, ws.max_column + 1):
+            for check_row in (1, 2):
+                cell_val = ws.cell(check_row, col).value
+                cell_str = str(cell_val).strip() if cell_val else ""
+                if "合计" in cell_str or "汇总" in cell_str:
+                    total_col = col
+                    break
+            else:
+                continue
+            break
+
+        # ---- 5. 插入 5501 科目行 + 空白行（交替） ----
+        # 在每个科目行之后留一行空白
+        logger.info(
+            f"    插入 {target_count} 行 5501 科目（交替留空白行）："
+            f"{[s['ccode_name'] for s in expense_subjects]}"
+        )
+        for i, subject in enumerate(expense_subjects):
+            # 先插入科目名称行
+            insert_row = current_expense_bottom
+            ws.insert_rows(insert_row, 1)
+
+            cell = ws.cell(insert_row, 1)
+            cell.value = f" {subject['ccode_name']}"
+
+            # 复制 A 列样式：从上一行
+            prev_row = insert_row - 1
+            if prev_row >= 1:
+                prev_cell = ws.cell(prev_row, 1)
+                for attr_name in ("font", "border", "alignment", "fill"):
+                    try:
+                        src_attr = getattr(prev_cell, attr_name, None)
+                        if src_attr and (attr_name != "fill" or src_attr.fill_type):
+                            setattr(cell, attr_name, copy(src_attr) if hasattr(src_attr, '__copy__') else copy(src_attr))
+                    except Exception:
+                        pass
+
+            # B 列到合计列加边框
+            for col_idx in range(2, total_col + 1):
+                try:
+                    ws.cell(insert_row, col_idx).border = copy(self.THIN_BORDER)
+                except Exception:
+                    pass
+
+            current_expense_bottom += 1  # 科目行插入后下移
+
+            # 插入空白行（留一行备用）
+            blank_row = current_expense_bottom
+            ws.insert_rows(blank_row, 1)
+            # 空白行也加边框
+            for col_idx in range(2, total_col + 1):
+                try:
+                    ws.cell(blank_row, col_idx).border = copy(self.THIN_BORDER)
+                except Exception:
+                    pass
+            current_expense_bottom += 1  # 空白行后继续下移
+
+        logger.info(f"    营业费用明细行调整完成: 插入 {target_count} 个科目（各间隔一行空白）")
+
+    # ================================================================
+    # _adjust_sheet_manage_rows — 根据 code 表的 5502 科目调整管理费用与财务费用之间的行（V2.4 新增）
+    # ================================================================
+    # 功能说明：
+    #   模板中"管理费用"与"财务费用"之间的行，根据各账套 code 表中
+    #   ccode 开头为 5502 的 6 位数字科目列表动态调整：
+    #   - 先删除"管理费用"与"财务费用"之间原有的全部现有行（模板中写死的固定明细）
+    #   - 再根据 5502 科目列表插入：每个科目一行（填科目名称 + 缩进），
+    #     然后隔一空白行，再插下一个科目，如此交替
+    # ================================================================
+
+    def _adjust_sheet_manage_rows(self, ws, db_name: str):
+        """
+        根据指定账套 code 表中 5502 开头的科目列表，
+        动态调整工作表中"管理费用"与"财务费用"之间的行。
+
+        :param ws: 目标工作表
+        :param db_name: 账套数据库名，如 UFDATA_007_2024
+        """
+        # ---- 1. 查询该账套的 5502 科目列表 ----
+        manage_subjects = self.extractor.get_manage_subjects_from_code(db_name)
+        if not manage_subjects:
+            logger.info("    该账套无 5502 科目，不调整管理费用明细行")
+            return
+        target_count = len(manage_subjects)
+
+        # ---- 2. 扫描 A 列，找出"管理费用"和"财务费用"的行号 ----
+        manage_row = None   # "管理费用"行号
+        finance_row = None  # "财务费用"行号
+        for row_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, 1).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str == "管理费用":
+                manage_row = row_idx
+            elif cell_str == "财务费用":
+                finance_row = row_idx
+            if manage_row is not None and finance_row is not None:
+                break
+
+        if manage_row is None or finance_row is None:
+            logger.warning("    无法定位'管理费用'或'财务费用'行，跳过管理费用明细行调整")
+            return
+        if finance_row - manage_row <= 1:
+            logger.warning("    '管理费用'与'财务费用'之间无空间，跳过")
+            return
+
+        logger.info(f"    定位: 管理费用行{manage_row}, 财务费用行{finance_row}")
+
+        # ---- 3. 删除两者之间的现有全部行 ----
+        rows_to_remove = list(range(manage_row + 1, finance_row))
+        for row_idx in sorted(rows_to_remove, reverse=True):
+            ws.delete_rows(row_idx, 1)
+            logger.debug(f"    删除第 {row_idx} 行（管理费用明细区域）")
+
+        # 删除后，"财务费用"行上移
+        current_manage_bottom = manage_row + 1  # 此时"财务费用"在这里
+
+        # ---- 4. 查找合计列位置（用于加边框） ----
+        total_col = ws.max_column
+        for col in range(1, ws.max_column + 1):
+            for check_row in (1, 2):
+                cell_val = ws.cell(check_row, col).value
+                cell_str = str(cell_val).strip() if cell_val else ""
+                if "合计" in cell_str or "汇总" in cell_str:
+                    total_col = col
+                    break
+            else:
+                continue
+            break
+
+        # ---- 5. 插入 5502 科目行 + 空白行（交替） ----
+        logger.info(
+            f"    插入 {target_count} 行 5502 科目（交替留空白行）："
+            f"{[s['ccode_name'] for s in manage_subjects]}"
+        )
+        for i, subject in enumerate(manage_subjects):
+            # 先插入科目名称行（带缩进空格）
+            insert_row = current_manage_bottom
+            ws.insert_rows(insert_row, 1)
+
+            cell = ws.cell(insert_row, 1)
+            cell.value = f" {subject['ccode_name']}"
+
+            # 复制 A 列样式：从上一行
+            prev_row = insert_row - 1
+            if prev_row >= 1:
+                prev_cell = ws.cell(prev_row, 1)
+                for attr_name in ("font", "border", "alignment", "fill"):
+                    try:
+                        src_attr = getattr(prev_cell, attr_name, None)
+                        if src_attr and (attr_name != "fill" or src_attr.fill_type):
+                            setattr(cell, attr_name, copy(src_attr) if hasattr(src_attr, '__copy__') else copy(src_attr))
+                    except Exception:
+                        pass
+
+            # B 列到合计列加边框
+            for col_idx in range(2, total_col + 1):
+                try:
+                    ws.cell(insert_row, col_idx).border = copy(self.THIN_BORDER)
+                except Exception:
+                    pass
+
+            current_manage_bottom += 1  # 科目行插入后下移
+
+            # 插入空白行（留一行备用）
+            blank_row = current_manage_bottom
+            ws.insert_rows(blank_row, 1)
+            # 空白行也加边框
+            for col_idx in range(2, total_col + 1):
+                try:
+                    ws.cell(blank_row, col_idx).border = copy(self.THIN_BORDER)
+                except Exception:
+                    pass
+            current_manage_bottom += 1  # 空白行后继续下移
+
+        logger.info(f"    管理费用明细行调整完成: 插入 {target_count} 个科目（各间隔一行空白）")
 
     def build(self) -> str:
         """

@@ -32,3 +32,6 @@ Thumbs.db
 
 # 测试输出
 *.tmp
+
+# 一次性分析/验证/辅助脚本
+scripts/
