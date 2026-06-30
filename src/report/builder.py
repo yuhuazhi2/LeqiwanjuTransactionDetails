@@ -953,14 +953,15 @@ class ReportBuilder:
     #   从 GL_AccVouch 表查询 cdigest='期间损益结转' 的全部记录，
     #   按以下规则将数据填入工作表的对应行列：
     #
-    #   【收入类科目（5101xx）】→ 取 md（借方），需 ccode_equal=3131
+    #   【收入类科目（5101xx）】→ 取 md（借方）
     #     例如 ccode=510101 对应 code 表中 ccode_name=油菜花，
     #     则填入"油菜花"这一行对应月份列。
     #
-    #   【成本类科目（5401）】→ 取 mc（贷方），需 ccode_equal=3131
-    #   【费用类科目（5501xx/5502xx/5503xx）】→ 取 mc（贷方），需 ccode_equal=3131
+    #   【成本类科目（5401）】→ 取 mc（贷方）
+    #   【费用类科目（5501xx/5502xx/5503）】→ 取 mc（贷方）
     #
     #   iperiod = 1 → 1月列，iperiod = 2 → 2月列，依此类推。
+    #   注意：不再对 ccode_equal 做任何过滤，所有期间损益结转记录都参与填列。
     # ================================================================
 
     def _fill_period_transfer_data(self, ws, db_name: str):
@@ -1026,17 +1027,14 @@ class ReportBuilder:
                     label_row_map[label] = row_idx
 
         # ---- 5. 遍历每条凭证分录，填列到对应行列 ----
+        # 不再对 ccode_equal 做任何过滤（取消 ccocode_equal=3131 限制），
+        # 所有期间损益结转记录（收入类取md借方，成本费用类取mc贷方）都参与填列。
         filled_count = 0
         for vouch in vouchers:
             ccode = str(vouch.get("ccode", "")).strip()
-            ccode_equal = str(vouch.get("ccode_equal", "")).strip()
             iperiod = int(vouch.get("iperiod", 0))
             md_val = float(vouch.get("md", 0) or 0)
             mc_val = float(vouch.get("mc", 0) or 0)
-
-            # 只处理 ccode_equal=3131 的记录（收入/成本/费用结转至本年利润）
-            if ccode_equal != "3131":
-                continue
 
             # 查找该 ccode 对应的科目名称
             ccode_name = code_name_map.get(ccode, "")
