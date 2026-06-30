@@ -331,6 +331,27 @@ class ReportBuilder:
             except Exception as e:
                 logger.warning(f"  {sheet_name} 行背景色应用失败: {e}")
 
+        # ---- 步骤5.10：从 GL_AccVouch 表填充期间损益结转数据（V2.6 新增） ----
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]
+            if sheet_name not in self._wb.sheetnames:
+                continue
+            ws = self._wb[sheet_name]
+
+            # 获取该账套对应的年度
+            year_str = ""
+            if account_years and acc.cAcc_Id in account_years:
+                year_str = str(account_years[acc.cAcc_Id])
+            if not year_str:
+                continue  # 无年度信息，跳过
+
+            # 构建数据库名
+            db_name = f"UFDATA_{acc.cAcc_Id.zfill(3)}_{year_str}"
+            try:
+                self._fill_period_transfer_data(ws, db_name)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 期间损益结转数据填列失败: {e}")
+
         # ---- 步骤6：保存工作簿到输出目录 ----
         output_path = self._save_framework_workbook()
 
@@ -924,6 +945,155 @@ class ReportBuilder:
                 cell.fill = copy(fill)
             except Exception:
                 pass
+
+    # ================================================================
+    # _fill_period_transfer_data — 从 GL_AccVouch 填列期间损益结转数据（V2.6 新增）
+    # ================================================================
+    # 功能说明：
+    #   从 GL_AccVouch 表查询 cdigest='期间损益结转' 的全部记录，
+    #   按以下规则将数据填入工作表的对应行列：
+    #
+    #   【收入类科目（5101xx）】→ 取 md（借方），需 ccode_equal=3131
+    #     例如 ccode=510101 对应 code 表中 ccode_name=油菜花，
+    #     则填入"油菜花"这一行对应月份列。
+    #
+    #   【成本类科目（5401）】→ 取 mc（贷方），需 ccode_equal=3131
+    #   【费用类科目（5501xx/5502xx/5503xx）】→ 取 mc（贷方），需 ccode_equal=3131
+    #
+    #   iperiod = 1 → 1月列，iperiod = 2 → 2月列，依此类推。
+    # ================================================================
+
+    def _fill_period_transfer_data(self, ws, db_name: str):
+        """
+        从 GL_AccVouch 期间损益结转记录填列数据到页签。
+
+        :param ws: 目标工作表
+        :param db_name: 账套数据库名，如 UFDATA_007_2026
+        """
+        # ---- 1. 获取月份列映射：扫描表头（第1行或第2行）建立 {月份: 列号} ----
+        month_map = {
+            "1月": 1, "2月": 2, "3月": 3, "4月": 4,
+            "5月": 5, "6月": 6, "7月": 7, "8月": 8,
+            "9月": 9, "10月": 10, "11月": 11, "12月": 12,
+        }
+        month_col_map = {}  # {月份数字: Excel列号}
+        for col_idx in range(1, ws.max_column + 1):
+            cell_val = ws.cell(1, col_idx).value
+            if cell_val is None:
+                cell_val = ws.cell(2, col_idx).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str in month_map:
+                month_col_map[month_map[cell_str]] = col_idx
+
+        if not month_col_map:
+            logger.warning("  _fill_period_transfer_data: 无法定位月份列，跳过")
+            return
+        logger.debug(f"  月份列映射: {month_col_map}")
+
+        # ---- 2. 查询该账套的期间损益结转凭证 ----
+        # 从 db_name 中提取年度（UFDATA_XXX_YYYY）
+        year = None
+        try:
+            parts = db_name.split('_')
+            if len(parts) >= 3:
+                year = int(parts[-1])
+        except (ValueError, IndexError):
+            pass
+
+        if not year:
+            logger.warning(f"  _fill_period_transfer_data: 无法从 {db_name} 提取年度，跳过")
+            return
+
+        vouchers = self.extractor.get_period_transfer_vouchers(db_name)
+        if not vouchers:
+            logger.info(f"  {db_name}: 无期间损益结转凭证数据，跳过")
+            return
+
+        logger.info(f"  {db_name}: 获取 {len(vouchers)} 条期间损益结转分录")
+
+        # ---- 3. 收集所有涉及的 ccode，批量查询科目名称 ----
+        all_ccodes = list(set(v["ccode"] for v in vouchers))
+        code_name_map = self.extractor.get_code_subject_name_batch(db_name, all_ccodes)
+        logger.debug(f"  科目名称映射: {code_name_map}")
+
+        # ---- 4. 扫描 A 列，建立 {科目名称: 行号} 映射 ----
+        label_row_map = {}  # {ccode_name: row_index}
+        for row_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, 1).value
+            if cell_val:
+                label = str(cell_val).strip()
+                if label:
+                    label_row_map[label] = row_idx
+
+        # ---- 5. 遍历每条凭证分录，填列到对应行列 ----
+        filled_count = 0
+        for vouch in vouchers:
+            ccode = str(vouch.get("ccode", "")).strip()
+            ccode_equal = str(vouch.get("ccode_equal", "")).strip()
+            iperiod = int(vouch.get("iperiod", 0))
+            md_val = float(vouch.get("md", 0) or 0)
+            mc_val = float(vouch.get("mc", 0) or 0)
+
+            # 只处理 ccode_equal=3131 的记录（收入/成本/费用结转至本年利润）
+            if ccode_equal != "3131":
+                continue
+
+            # 查找该 ccode 对应的科目名称
+            ccode_name = code_name_map.get(ccode, "")
+            if not ccode_name:
+                continue
+
+            # 查找科目名称对应的行号
+            row_idx = label_row_map.get(ccode_name, None)
+            if row_idx is None:
+                continue
+
+            # 查找月份对应的列号
+            col_idx = month_col_map.get(iperiod, None)
+            if col_idx is None:
+                continue
+
+            # ---- 确定填入 md 还是 mc ----
+            # 收入类（5101xx）→ md（借方）
+            # 成本/费用类（5401/5501/5502/5503）→ mc（贷方）
+            is_revenue = ccode.startswith("5101")
+            is_cost = ccode.startswith("5401")
+            is_expense = (ccode.startswith("5501") or
+                          ccode.startswith("5502") or
+                          ccode.startswith("5503"))
+
+            if is_revenue:
+                val = md_val
+            elif is_cost or is_expense:
+                val = mc_val
+            else:
+                # 其他科目跳过（不处理）
+                continue
+
+            # ---- 跳过零值 ----
+            if val == 0:
+                continue
+
+            # ---- 写入单元格 ----
+            cell = ws.cell(row_idx, col_idx)
+            # 如果单元格已有值，累加（同一科目同一月份可能有多个分录）
+            existing = cell.value
+            try:
+                existing = float(existing) if existing else 0
+            except (ValueError, TypeError):
+                existing = 0
+            cell.value = existing + val
+            # 设置数字格式
+            cell.number_format = self.CURRENCY_FORMAT
+            cell.font = self.DATA_FONT
+            cell.alignment = Alignment(horizontal="right")
+            cell.border = self.THIN_BORDER
+
+            filled_count += 1
+            logger.debug(f"    填入: {ccode_name} ({ccode}), iperiod={iperiod}, "
+                         f"col={col_idx}, row={row_idx}, val={val}")
+
+        logger.info(f"  {db_name}: 期间损益结转数据填列完成，共{filled_count}个单元格")
 
     def build(self) -> str:
         """

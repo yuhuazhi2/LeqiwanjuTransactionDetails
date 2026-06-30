@@ -264,6 +264,64 @@ class DatabaseConnector:
             logger.warning(f"查询 {db_name}.gl_mend 失败: {e}")
             return []
 
+    def execute_query_odbc(self, sql: str, database: str = "",
+                           params: tuple = ()) -> list[dict]:
+        """
+        使用 pyodbc 直接执行 SQL 查询（绕过 pymssql 的 GBK 编码限制）。
+        适用于 SQL 或参数中包含中文字符的场景，因为 pymssql 在
+        charset=GBK 下对中文字符参数的编码可能导致查询无结果。
+
+        注意：此方法会创建一个独立的 pyodbc 连接，不会影响主连接。
+        每次执行后自动关闭该临时连接。
+
+        :param sql: SQL 语句，参数占位符使用 ?（pyodbc 风格）
+        :param database: 目标数据库名
+        :param params: 参数元组
+        :return: 列名->值的字典列表
+        """
+        server = self.config["server"]
+        port = self.config.get("port", 1433)
+        user = self.config["username"]
+        password = self.config["password"]
+        timeout = self.config.get("timeout", 30)
+        db = database or "master"
+
+        # 遍历驱动列表尝试连接
+        last_error = None
+        sql_safe = sql.replace("%s", "?")
+        for driver in self._drivers:
+            try:
+                conn_str = (
+                    f"DRIVER={{{driver}}};"
+                    f"SERVER={server},{port};"
+                    f"DATABASE={db};"
+                    f"UID={user};"
+                    f"PWD={password};"
+                    f"Connect Timeout={timeout};"
+                    f"Login Timeout={timeout};"
+                )
+                logger.debug(f"execute_query_odbc: 尝试驱动 [{driver}]")
+                conn = pyodbc.connect(conn_str, autocommit=True)
+                cursor = conn.cursor()
+                cursor.execute(sql_safe, params)
+                columns = [col[0] for col in cursor.description]
+                rows = []
+                for row in cursor.fetchall():
+                    rows.append(dict(zip(columns, row)))
+                cursor.close()
+                conn.close()
+                logger.debug(f"execute_query_odbc: [{driver}] 查询成功, {len(rows)} 行")
+                return rows
+            except Exception as e:
+                last_error = e
+                logger.debug(f"execute_query_odbc: 驱动 [{driver}] 失败: {e}")
+                continue
+
+        raise ConnectionError(
+            f"execute_query_odbc: 无法连接到 {server}:{port}/{db}, "
+            f"已尝试 {len(self._drivers)} 个驱动，最后错误: {last_error}"
+        )
+
     def get_databases(self) -> list[str]:
         """获取服务器上所有数据库名称"""
         rows = self.execute_query(

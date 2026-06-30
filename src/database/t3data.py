@@ -314,3 +314,107 @@ class T3DataExtractor:
         except Exception as e:
             logger.warning(f"  查询 Code 表（5502科目）失败: {e}")
             return []
+
+    # ================================================================
+    # GL_AccVouch 期间损益结转凭证查询（V2.6 新增）
+    # ================================================================
+    def get_period_transfer_vouchers(self, db_name: str) -> list[dict]:
+        """
+        从 GL_accvouch 表查询 cdigest='期间损益结转' 的所有凭证分录记录。
+        这些记录用于在各店页签中填入期间损益结转后的实际发生额。
+
+        查询字段:
+          iperiod     - 会计期间（月份）
+          ino_id      - 凭证编号
+          inid        - 分录序号
+          cdigest     - 摘要（期间损益结转）
+          ccode       - 科目编码
+          ccode_equal - 对方科目编码
+          md          - 借方金额
+          mc          - 贷方金额
+
+        注意：SQL Server 2008R2 版 T3 中 GL_AccVouch 表无 iyear 字段，
+              年份信息由数据库名 UFDATA_XXX_YYYY 承载。
+              必须使用参数化查询 (%s) 传递中文条件，因为 pymssql
+              通过 GBK 编码发送 SQL，硬编码在 SQL 中的中文字符
+              可能被错误编码导致查询不到数据。
+
+        :param db_name: 账套数据库名，如 UFDATA_007_2026
+        :return: 字典列表，按 iperiod, ino_id, inid 升序排列
+        """
+        # 注意：必须使用 execute_query_odbc 而非 execute_query，
+        # 因为 pymssql 在 charset=GBK 下对中文字符参数的编码有 Bug，
+        # 会导致 cdigest = '期间损益结转' 条件匹配不到任何记录。
+        # pyodbc 使用 ? 占位符能正确处理 Unicode 参数。
+        sql = f"""
+            SELECT iperiod, ino_id, inid, cdigest,
+                   ccode, ccode_equal, md, mc
+            FROM [{db_name}].dbo.GL_AccVouch
+            WHERE cdigest = ?
+            ORDER BY iperiod, ino_id, inid
+        """
+        try:
+            rows = self.connector.execute_query_odbc(sql, database=db_name,
+                                                     params=('期间损益结转',))
+            logger.info(f"  查询期间损益结转凭证: 共 {len(rows)} 条分录")
+            return rows
+        except Exception as e:
+            logger.warning(f"  查询 GL_AccVouch 期间损益结转失败: {e}")
+            return []
+
+    def get_code_subject_name(self, db_name: str,
+                              ccode: str) -> str:
+        """
+        根据科目编码查询科目名称。
+
+        :param db_name: 账套数据库名
+        :param ccode: 科目编码
+        :return: 科目名称（未找到返回空字符串）
+        """
+        sql = f"""
+            SELECT ccode_name
+            FROM [{db_name}].dbo.Code
+            WHERE ccode = %s
+        """
+        try:
+            rows = self.connector.execute_query(sql, database=db_name,
+                                                params=(ccode,))
+            if rows:
+                return str(rows[0].get("ccode_name", "")).strip()
+            return ""
+        except Exception as e:
+            logger.warning(f"  查询 Code 表科目名称失败 ccode={ccode}: {e}")
+            return ""
+
+    def get_code_subject_name_batch(self, db_name: str,
+                                    ccode_list: list[str]) -> dict[str, str]:
+        """
+        批量根据科目编码查询科目名称。
+
+        :param db_name: 账套数据库名
+        :param ccode_list: 科目编码列表，如 ['510101','510102', ...]
+        :return: {ccode: ccode_name, ...}
+        """
+        if not ccode_list:
+            return {}
+        # 去重
+        unique_codes = list(set(ccode_list))
+        placeholders = ','.join(['%s'] * len(unique_codes))
+        sql = f"""
+            SELECT ccode, ccode_name
+            FROM [{db_name}].dbo.Code
+            WHERE ccode IN ({placeholders})
+        """
+        try:
+            rows = self.connector.execute_query(sql, database=db_name,
+                                                params=tuple(unique_codes))
+            result = {}
+            for row in rows:
+                code = str(row.get("ccode", "")).strip()
+                name = str(row.get("ccode_name", "")).strip()
+                if code:
+                    result[code] = name
+            return result
+        except Exception as e:
+            logger.warning(f"  批量查询 Code 表科目名称失败: {e}")
+            return {}
