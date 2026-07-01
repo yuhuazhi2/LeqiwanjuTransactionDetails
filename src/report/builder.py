@@ -352,7 +352,26 @@ class ReportBuilder:
             except Exception as e:
                 logger.warning(f"  {sheet_name} 期间损益结转数据填列失败: {e}")
 
-        # ---- 步骤6：保存工作簿到输出目录 ----
+        # ---- 步骤5.11：计算各汇总行（销售业绩/营业费用/管理费用）的合计值（V2.8 新增） ----
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]
+            if sheet_name not in self._wb.sheetnames:
+                continue
+            ws = self._wb[sheet_name]
+            try:
+                self._calculate_summary_sums(ws)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 汇总行合计计算失败: {e}")
+
+        # ---- 步骤6：调整所有表页的合计列宽度（增加50%） ----
+        for sheet_name in self._wb.sheetnames:
+            ws = self._wb[sheet_name]
+            try:
+                self._widen_total_column(ws)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 合计列宽度调整失败: {e}")
+
+        # ---- 步骤7：保存工作簿到输出目录 ----
         output_path = self._save_framework_workbook()
 
         logger.info(f"框架雏形生成完成，共 {len(accounts)} 个表页")
@@ -1093,6 +1112,226 @@ class ReportBuilder:
 
         logger.info(f"  {db_name}: 期间损益结转数据填列完成，共{filled_count}个单元格")
 
+    # ================================================================
+    # _calculate_summary_sums — 计算汇总行（销售业绩/营业费用/管理费用）的合计值（V2.8 新增）
+    # ================================================================
+    # 功能说明：
+    #   在期间损益结转数据填列完毕后，根据明细行数值计算并填入汇总行的合计值。
+    #
+    #   计算规则：
+    #   - 销售业绩行：取"销售业绩"与"主营业务成本"之间所有行（每列）数值合计
+    #   - 营业费用行：取"营业费用"与"管理费用"之间 有背景色 的行（每列）数值合计
+    #   - 管理费用行：取"管理费用"与"财务费用"之间 有背景色 的行（每列）数值合计
+    #
+    #   备注：
+    #   - "有背景色的行"即内容不为空且已设置过背景填充色的明细科目行；
+    #     空行（无背景色）不参与营业费用和管理费用的合计计算。
+    #   - 销售业绩合计不区分空白行，取区间内所有行的合计（区间内不含空白行）。
+    # ================================================================
+
+    # ---- 辅助常量：月份标题映射 ----
+    _MONTH_MAP = {
+        "1月": 1, "2月": 2, "3月": 3, "4月": 4,
+        "5月": 5, "6月": 6, "7月": 7, "8月": 8,
+        "9月": 9, "10月": 10, "11月": 11, "12月": 12,
+    }
+
+    def _calculate_summary_sums(self, ws):
+        """
+        计算各汇总行的合计值并填入对应单元格。
+        应在 _fill_period_transfer_data 和 _apply_row_colors 之后调用。
+
+        计算策略（区分列处理）：
+          1. 先遍历各月份列，将区间内有效明细行的值合计后填入汇总行对应月份单元格
+          2. 再遍历合计列，将其值设为汇总行自身各月份单元格之和
+             （而非从明细行直接汇总合计列）
+
+        :param ws: 目标工作表
+        """
+        # ---- 1. 扫描 A 列，定位关键行 ----
+        sales_row = None       # "销售业绩"行号
+        cost_row = None        # "主营业务成本"行号
+        expense_row = None     # "营业费用"行号
+        manage_row = None      # "管理费用"行号
+        finance_row = None     # "财务费用"行号
+        profit_row = None      # "利润"行号
+        profit_rate_row = None # "利润率"行号
+
+        for row_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, 1).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str == "销售业绩":
+                sales_row = row_idx
+            elif cell_str == "主营业务成本":
+                cost_row = row_idx
+            elif cell_str == "营业费用":
+                expense_row = row_idx
+            elif cell_str == "管理费用":
+                manage_row = row_idx
+            elif cell_str == "财务费用":
+                finance_row = row_idx
+            elif cell_str == "利润":
+                profit_row = row_idx
+            elif cell_str == "利润率":
+                profit_rate_row = row_idx
+
+        logger.debug(f"  _calculate_summary_sums 定位: "
+                      f"销售业绩行{sales_row}, 主营业务成本行{cost_row}, "
+                      f"营业费用行{expense_row}, 管理费用行{manage_row}, "
+                      f"财务费用行{finance_row}, "
+                      f"利润行{profit_row}, 利润率行{profit_rate_row}")
+
+        # ---- 2. 查找月份列和合计列 ----
+        month_col_map = {}  # {月份数字: 列号}
+        total_col = None
+        for col_idx in range(1, ws.max_column + 1):
+            cell_val = ws.cell(1, col_idx).value
+            if cell_val is None:
+                cell_val = ws.cell(2, col_idx).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str in self._MONTH_MAP:
+                month_col_map[self._MONTH_MAP[cell_str]] = col_idx
+            elif "合计" in cell_str or "汇总" in cell_str:
+                total_col = col_idx
+
+        month_cols = list(month_col_map.values())  # 各月份列号
+        if not month_cols:
+            logger.warning("  _calculate_summary_sums: 未找到月份列，跳过")
+            return
+
+        logger.debug(f"  月份列: {month_col_map}, 合计列: {total_col}")
+
+        # ---- 工具函数：写入汇总行单元格，并设置格式 ----
+        def _write_summary_cell(ws_row, ws_col, value):
+            cell = ws.cell(ws_row, ws_col)
+            cell.value = value
+            cell.number_format = self.CURRENCY_FORMAT
+            cell.font = self.DATA_FONT
+            cell.alignment = Alignment(horizontal="right")
+            cell.border = self.THIN_BORDER
+
+        # ---- 工具函数：安全读取单元格数值 ----
+        def _get_cell_float(ws_row, ws_col):
+            cell_val = ws.cell(ws_row, ws_col).value
+            try:
+                return float(cell_val) if cell_val else 0.0
+            except (ValueError, TypeError):
+                return 0.0
+
+        # ======== 3. 计算各汇总行（仅月份列） ========
+        # 逐列处理，而不是逐行处理，避免重复行列扫描
+
+        # --- 3a. 销售业绩：取销售业绩与主营业务成本之间所有行 ---
+        if sales_row is not None and cost_row is not None and sales_row < cost_row:
+            logger.debug(f"  计算销售业绩合计: 区间行 {sales_row+1} ~ {cost_row-1}")
+            for col_idx in month_cols:
+                total = 0.0
+                for row_idx in range(sales_row + 1, cost_row):
+                    cell_val = ws.cell(row_idx, col_idx).value
+                    try:
+                        total += float(cell_val) if cell_val else 0
+                    except (ValueError, TypeError):
+                        pass
+                _write_summary_cell(sales_row, col_idx, total)
+
+        # --- 3b. 营业费用：仅统计有背景色的明细行 ---
+        if expense_row is not None and manage_row is not None and expense_row < manage_row:
+            logger.debug(f"  计算营业费用合计: 区间行 {expense_row+1} ~ {manage_row-1}")
+            for col_idx in month_cols:
+                total = 0.0
+                for row_idx in range(expense_row + 1, manage_row):
+                    cell_a = ws.cell(row_idx, 1)
+                    has_fill = (cell_a.fill and cell_a.fill.fill_type is not None
+                                and cell_a.fill.fill_type != "")
+                    if not has_fill:
+                        continue
+                    cell_val = ws.cell(row_idx, col_idx).value
+                    try:
+                        total += float(cell_val) if cell_val else 0
+                    except (ValueError, TypeError):
+                        pass
+                _write_summary_cell(expense_row, col_idx, total)
+
+        # --- 3c. 管理费用：仅统计有背景色的明细行 ---
+        if manage_row is not None and finance_row is not None and manage_row < finance_row:
+            logger.debug(f"  计算管理费用合计: 区间行 {manage_row+1} ~ {finance_row-1}")
+            for col_idx in month_cols:
+                total = 0.0
+                for row_idx in range(manage_row + 1, finance_row):
+                    cell_a = ws.cell(row_idx, 1)
+                    has_fill = (cell_a.fill and cell_a.fill.fill_type is not None
+                                and cell_a.fill.fill_type != "")
+                    if not has_fill:
+                        continue
+                    cell_val = ws.cell(row_idx, col_idx).value
+                    try:
+                        total += float(cell_val) if cell_val else 0
+                    except (ValueError, TypeError):
+                        pass
+                _write_summary_cell(manage_row, col_idx, total)
+
+        # ======== 4. 计算所有行的合计列 ========
+        # 遍历每一行（数据从第3行开始），对每个存在月份数据的行，
+        # 计算合计列 = 本行各月份数值之和
+        if total_col is not None:
+            for row_idx in range(3, ws.max_row + 1):
+                # 跳过利润和利润率行（合计列将由公式计算覆盖）
+                if row_idx == profit_row or row_idx == profit_rate_row:
+                    continue
+                # 检查该行是否有月份数据（任一月份列非空且非零）
+                has_month_data = False
+                row_total = 0.0
+                for col_idx in month_cols:
+                    cell_val = ws.cell(row_idx, col_idx).value
+                    try:
+                        val = float(cell_val) if cell_val else 0
+                    except (ValueError, TypeError):
+                        val = 0
+                    if val != 0:
+                        has_month_data = True
+                    row_total += val
+
+                if has_month_data:
+                    _write_summary_cell(row_idx, total_col, row_total)
+
+        # ======== 5. 计算利润和利润率（按列公式计算） ========
+        # 利润 = 销售业绩 - 主营业务成本 - 营业费用 - 管理费用 - 财务费用
+        # 利润率 = 利润 / 销售业绩（百分比）
+        # 对每个月份列和合计列分别计算
+
+        # --- 5a. 计算各月份列的利润值 ---
+        if profit_row is not None:
+            all_cols = list(month_cols)
+            if total_col is not None:
+                all_cols.append(total_col)  # 合计列也按公式计算
+            for col_idx in all_cols:
+                sales_val = _get_cell_float(sales_row, col_idx) if sales_row else 0
+                cost_val = _get_cell_float(cost_row, col_idx) if cost_row else 0
+                expense_val = _get_cell_float(expense_row, col_idx) if expense_row else 0
+                manage_val = _get_cell_float(manage_row, col_idx) if manage_row else 0
+                finance_val = _get_cell_float(finance_row, col_idx) if finance_row else 0
+                profit_val = sales_val - cost_val - expense_val - manage_val - finance_val
+                _write_summary_cell(profit_row, col_idx, profit_val)
+
+        # --- 5b. 计算各月份列的利润率 ---
+        if profit_rate_row is not None:
+            all_cols = list(month_cols)
+            if total_col is not None:
+                all_cols.append(total_col)
+            for col_idx in all_cols:
+                sales_val = _get_cell_float(sales_row, col_idx) if sales_row else 0
+                profit_val = _get_cell_float(profit_row, col_idx) if profit_row else 0
+                rate_val = (profit_val / sales_val * 100) if sales_val != 0 else 0
+                # 写入百分比格式
+                cell = ws.cell(profit_rate_row, col_idx)
+                cell.value = rate_val
+                cell.number_format = '0.00"%"'
+                cell.font = self.DATA_FONT
+                cell.alignment = Alignment(horizontal="right")
+                cell.border = self.THIN_BORDER
+
+        logger.info(f"  汇总行合计及利润/利润率计算完成")
+
     def build(self) -> str:
         """
         执行完整的报表生成流程
@@ -1118,6 +1357,15 @@ class ReportBuilder:
 
         # 3. 创建工作簿并填充
         self._create_workbook(template, accounts)
+
+        # 3.5 调整所有页签的合计列宽度（增加50%）
+        for sheet_name in self._wb.sheetnames:
+            ws = self._wb[sheet_name]
+            try:
+                self._widen_total_column(ws)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 合计列宽度调整失败: {e}")
+
         output_path = self._save_workbook()
 
         # 4. 可选：自动打开文件
@@ -1410,6 +1658,49 @@ class ReportBuilder:
                         val = profit / rev * 100 if rev != 0 else 0
                         self._set_cell_value(ws, row, col.col_index, val)
                         ws.cell(row, col.col_index).number_format = '0.00"%"'
+
+    # ================================================================
+    # _widen_total_column — 将"年度合计"列宽度增加50%（V2.7 新增）
+    # ================================================================
+    # 功能说明：
+    #   扫描工作表第1行或第2行，找到"年度合计"（或包含"合计"/"汇总"）的列，
+    #   将其列宽增加50%，使得财务数字显示更完整，避免显示为"####"。
+    #   适用于 build_framework() 和 build() 两个流程。
+    # ================================================================
+
+    @staticmethod
+    def _widen_total_column(ws):
+        """
+        将工作表中"年度合计"列的宽度增加50%。
+
+        :param ws: 目标工作表
+        """
+        from openpyxl.utils import get_column_letter
+
+        total_col = None
+        # 扫描第1行和第2行，查找"年度合计"列
+        for row_num in (1, 2):
+            for col_idx in range(1, ws.max_column + 1):
+                cell_val = ws.cell(row_num, col_idx).value
+                cell_str = str(cell_val).strip() if cell_val else ""
+                if "合计" in cell_str or "汇总" in cell_str:
+                    total_col = col_idx
+                    break
+            if total_col is not None:
+                break
+
+        if total_col is None:
+            logger.warning("  _widen_total_column: 无法定位合计列，跳过")
+            return
+
+        col_letter = get_column_letter(total_col)
+        current_width = ws.column_dimensions[col_letter].width
+        if current_width is None or current_width < 1:
+            current_width = 10  # 默认宽度
+            logger.debug(f"  {col_letter}列当前宽度为None，使用默认值10")
+        new_width = round(current_width * 1.5, 1)  # 增加50%
+        ws.column_dimensions[col_letter].width = new_width
+        logger.info(f"  调整{col_letter}列（合计列）宽度: {current_width} → {new_width}")
 
     def _set_cell_value(self, ws, row: int, col: int, value: float):
         """设置单元格数值并应用格式"""
