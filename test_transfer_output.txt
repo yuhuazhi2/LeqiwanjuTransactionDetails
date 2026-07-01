@@ -1,0 +1,52 @@
+连接成功: <pymssql._pymssql.Connection object at 0x00000137DBD60B80>
+
+=== 测试1: GL_accvouch期间损益结转查询 ===
+SQL: 
+            SELECT iperiod, ino_id, inid, cdigest, ccode, ccode_equal, md, mc
+            FROM [UFDATA_007_2026].dbo.GL_accvouch
+            WHERE cdigest LIKE N'%期间损益结转%'
+            ORDER BY iperiod, ino_id, inid
+        
+查询结果: 0 条记录
+
+=== 测试2: 仅ccode_equal=3131的记录 ===
+ccode_equal=3131 的记录数: 0
+
+=== 测试3: Code表科目映射 ===
+科目映射结果: 34 条
+  ccode=5101, ccode_name=主营业务收入
+  ccode=510101, ccode_name=油菜花
+  ccode=510102, ccode_name=现金
+  ccode=510103, ccode_name=美团
+  ccode=510104, ccode_name=抖音
+  ccode=510105, ccode_name=按摩椅
+  ccode=510106, ccode_name=咪哒
+  ccode=510107, ccode_name=其他
+  ccode=5401, ccode_name=主营业务成本
+  ccode=5501, ccode_name=营业费用
+  ccode=550101, ccode_name=广告费
+  ccode=550102, ccode_name=物料费
+  ccode=550103, ccode_name=设备
+  ccode=550104, ccode_name=折旧费
+  ccode=550105, ccode_name=房租
+  ccode=550106, ccode_name=物业费
+  ccode=550107, ccode_name=电费
+  ccode=550108, ccode_name=修配费
+  ccode=550109, ccode_name=运杂费
+  ccode=550110, ccode_name=其他
+  ccode=5502, ccode_name=管理费用
+  ccode=550201, ccode_name=工资
+  ccode=550202, ccode_name=办公费
+  ccode=550203, ccode_name=差旅费
+  ccode=550204, ccode_name=业务招待费
+  ccode=550205, ccode_name=员工福利
+  ccode=550206, ccode_name=装修费
+  ccode=550207, ccode_name=开办费
+  ccode=550208, ccode_name=服务咨询费
+  ccode=550209, ccode_name=社保-单位部分
+  ccode=550210, ccode_name=管理费用分摊
+  ccode=550211, ccode_name=奖金
+  ccode=550212, ccode_name=税费
+  ccode=5503, ccode_name=财务费用
+
+=== 所有测试完成 ===
