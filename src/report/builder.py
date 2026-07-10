@@ -173,7 +173,8 @@ class ReportBuilder:
     # ================================================================
 
     def build_framework(self, accounts: list = None,
-                        account_years: dict[str, int] = None) -> str:
+                        account_years: dict[str, int] = None,
+                        output_format: str = "xlsx") -> list[str]:
         """
         生成报表框架雏形（V2.0新增）
         ========================
@@ -197,9 +198,13 @@ class ReportBuilder:
             account_years: 账套年份映射 {账套号: 年度}（可选），
                            指定每个账套对应的报表年份，用于A2显示。
                            未传入时，A2只显示账套名称。
+            output_format: 输出格式，可选值：
+                           "xlsx"  - 仅生成 Excel 文件（默认，向后兼容）
+                           "html"  - 仅生成 HTML 文件
+                           "both"  - 同时生成 Excel 和 HTML 文件
 
         返回:
-            str: 生成的Excel文件绝对路径
+            list[str]: 生成的文件路径列表（可能包含一个或两个路径）
         """
         logger.info("=" * 60)
         logger.info("开始生成报表框架雏形")
@@ -407,12 +412,31 @@ class ReportBuilder:
             except Exception as e:
                 logger.warning(f"  {sheet_name} 合计列宽度调整失败: {e}")
 
-        # ---- 步骤7：保存工作簿到输出目录 ----
-        output_path = self._save_framework_workbook()
+        # ---- 步骤7：根据 output_format 决定输出方式 ----
+        # 支持 "xlsx"（仅Excel）、"html"（仅HTML）、"both"（两种都生成）
+        output_paths = []
 
-        logger.info(f"框架雏形生成完成，共 {len(accounts)} 个表页")
-        logger.info(f"文件路径: {output_path}")
-        return output_path
+        if output_format in ("xlsx", "both"):
+            xlsx_path = self._save_framework_workbook()
+            output_paths.append(xlsx_path)
+            logger.info(f"Excel文件路径: {xlsx_path}")
+
+        if output_format in ("html", "both"):
+            # 导入HTML渲染器，将数据渲染为自包含的HTML报表文件
+            from src.report.html_renderer import HtmlRenderer
+            renderer = HtmlRenderer(self.config)
+            html_path = renderer.render(
+                accounts=accounts,
+                account_years=account_years,
+                db_connector=self.connector,
+                extractor=self.extractor
+            )
+            output_paths.append(html_path)
+            logger.info(f"HTML文件路径: {html_path}")
+
+        logger.info(f"框架雏形生成完成，共 {len(accounts)} 个表页，"
+                     f"输出 {len(output_paths)} 个文件")
+        return output_paths
 
     # ================================================================
     # _adjust_sheet_columns — 根据已结账月份调整工作表列结构（V2.1 新增）
@@ -1773,7 +1797,7 @@ class ReportBuilder:
         """
         保存框架雏形工作簿到输出文件
         ==============================
-        生成的文件名格式如：分店财务报表_框架雏形_2024_20260626_112233.xlsx
+        生成的文件名格式如：分店财务报表_2024_20260626_112233.xlsx
         保存后自动关闭工作簿释放资源。
         """
         output_dir = self.output_config.get("dir", "output")
@@ -1783,7 +1807,7 @@ class ReportBuilder:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         prefix = self.output_config.get("filename_prefix", "分店财务报表_")
         ext = self.output_config.get("file_extension", ".xlsx")
-        filename = f"{prefix}框架雏形_{self.report_year}_{timestamp}{ext}"
+        filename = f"{prefix}{self.report_year}_{timestamp}{ext}"
         output_path = os.path.join(output_dir, filename)
 
         self._wb.save(output_path)

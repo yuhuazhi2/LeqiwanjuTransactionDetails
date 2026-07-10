@@ -92,6 +92,10 @@ def parse_args() -> argparse.Namespace:
         help="配置文件路径（默认: config/settings.yaml）"
     )
     parser.add_argument(
+        "--format", choices=["xlsx", "html", "both"], default=None,
+        help="输出格式：xlsx（Excel）/ html（HTML）/ both（同时生成两种）"
+    )
+    parser.add_argument(
         "--year", type=int,
         help="报表年份（覆盖配置文件中的设置）"
     )
@@ -126,6 +130,8 @@ def override_config_with_args(config: dict, args: argparse.Namespace) -> dict:
         config["report_months"] = list(set(args.months))
     if args.accounts:
         config["account_filter"]["include_ids"] = list(set(args.accounts))
+    if args.format:
+        config["output"]["format"] = args.format
     if args.no_open:
         config["output"]["open_when_done"] = False
     if args.output_dir:
@@ -149,15 +155,36 @@ def run_cli_mode(args: argparse.Namespace):
     try:
         # 创建报表生成器
         from src.report.builder import ReportBuilder
+        from src.database.ufsystem import UFSystemQuerier
+        from src.database.connector import DatabaseConnector
+
         builder = ReportBuilder(config)
 
-        # 执行生成
-        output_path = builder.build()
+        # 获取输出格式（从配置或命令行参数）
+        output_format = config.get("output", {}).get("format", "xlsx")
+
+        # 执行生成（使用 build_framework 替代已废弃的 build）
+        # 查询账套列表
+        accounts = builder._get_accounts()
+
+        if not accounts:
+            raise ValueError("未查询到任何账套，请检查数据库配置！")
+
+        # 构建账套年份映射
+        year = config.get("report_year", 2024)
+        account_years = {acc.cAcc_Id: year for acc in accounts}
+
+        output_paths = builder.build_framework(
+            accounts=accounts,
+            account_years=account_years,
+            output_format=output_format
+        )
 
         # 输出结果摘要
         print(f"\n{'=' * 60}")
         print(f"  ✅ 财务报表生成成功！")
-        print(f"  📄 文件路径: {output_path}")
+        for path in output_paths:
+            print(f"  📄 文件路径: {path}")
         print(f"{'=' * 60}")
         logger.info("程序执行完成")
 
@@ -193,6 +220,8 @@ def main():
     args = parse_args()
 
     # 判断是否使用命令行模式（--cli 参数或显式的配置/年份/账套等参数）
+    # 注意：--format 参数在 CLI 模式下独立使用，不支持从 GUI 模式传递。
+    # 当指定 --format 且没有同时指定 --cli 或账套等其他参数时，仍进入 GUI 模式。
     has_cli_args = any([
         args.config != os.path.join(_PROJECT_ROOT, "config", "settings.yaml"),
         args.year is not None,
@@ -200,6 +229,7 @@ def main():
         args.accounts is not None,
         args.no_open,
         args.output_dir is not None,
+        args.format is not None,
     ])
 
     if args.cli or has_cli_args:

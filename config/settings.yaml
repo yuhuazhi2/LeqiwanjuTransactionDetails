@@ -23,6 +23,7 @@ template:
 
 # ---- 输出配置 ----
 output:
+  format: "xlsx"                         # 输出格式：xlsx / html / both（GUI模式下由界面按钮覆盖）
   dir: "output"                          # 输出目录
   filename_prefix: "分店财务报表_"         # 输出文件名前缀
   file_extension: ".xlsx"                # 输出格式（.xlsx / .xls）

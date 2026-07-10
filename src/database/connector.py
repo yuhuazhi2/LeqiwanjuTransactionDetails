@@ -222,8 +222,21 @@ class DatabaseConnector:
         :param database: 目标数据库名
         :param params: SQL参数元组
         :return: 列名->值的字典列表
+
+        注意：pymssql 使用 %s 作为参数占位符，pyodbc 使用 ? 作为参数占位符。
+              该方法会根据当前连接类型自动适配占位符风格：
+              - pymssql 连接：保持 %s 不变
+              - pyodbc 连接：自动将 %s 替换为 ?
         """
         with self.cursor(database) as cursor:
+            # ---- 自动适配参数占位符风格 ----
+            # 检查游标所属模块，判断连接类型
+            cursor_module = type(cursor).__module__ if hasattr(type(cursor), '__module__') else ''
+            if 'pyodbc' in cursor_module:
+                # pyodbc 需要 ? 占位符，将 %s 替换为 ?
+                sql = sql.replace('%s', '?')
+            # pymssql 直接使用 %s，保持原样
+
             cursor.execute(sql, params)
             columns = [col[0] for col in cursor.description]
             rows = []

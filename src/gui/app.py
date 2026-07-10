@@ -254,6 +254,32 @@ class MainWindow:
         action_frame = ttk.Frame(self.root, padding=6)
         action_frame.pack(fill="x", padx=8, pady=(0, 6))
 
+        # ---- 输出格式选择（单选按钮组） ----
+        # 注意：必须先生成 self.format_frame 再创建 Radiobutton 并"先打包后放置"，
+        #       pack(side="left") 保证按钮组水平排列在操作按钮左侧
+        format_frame = ttk.LabelFrame(action_frame, text="输出格式", padding=2)
+        format_frame.pack(side="left", padx=(0, 10))
+
+        self.format_var = tk.StringVar(value="xlsx")  # 默认 Excel
+
+        rb_excel = ttk.Radiobutton(
+            format_frame, text="Excel (.xlsx)", variable=self.format_var,
+            value="xlsx"
+        )
+        rb_excel.pack(side="left", padx=2)
+
+        rb_html = ttk.Radiobutton(
+            format_frame, text="HTML (.html)", variable=self.format_var,
+            value="html"
+        )
+        rb_html.pack(side="left", padx=2)
+
+        rb_both = ttk.Radiobutton(
+            format_frame, text="同时生成", variable=self.format_var,
+            value="both"
+        )
+        rb_both.pack(side="left", padx=2)
+
         # ---- 主按钮：完整报表生成（绿色） ----
         self.btn_generate = tk.Button(
             action_frame, text="生成合并汇总报表", width=22,
@@ -542,12 +568,17 @@ class MainWindow:
 
                 # 构建账套->年份映射 {账套号: 年度}
                 account_years = {acc.cAcc_Id: year for acc, year in items if year == report_year}
+
+                # 获取用户选择的输出格式（"xlsx" / "html" / "both"）
+                output_format = self.format_var.get()
+
                 builder = ReportBuilder(config)
-                output_path = builder.build_framework(
+                generated_paths = builder.build_framework(
                     accounts=accounts,
-                    account_years=account_years
+                    account_years=account_years,
+                    output_format=output_format  # 传递输出格式参数
                 )
-                output_paths.append(output_path)
+                output_paths.extend(generated_paths)
 
             self.root.after(0, self._on_generate_success, output_paths)
 

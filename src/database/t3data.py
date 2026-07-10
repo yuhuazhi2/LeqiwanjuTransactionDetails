@@ -36,32 +36,31 @@ class T3DataExtractor:
         :param year: 年份
         :param month: 月份（0=查询全年累计）
         :return: {code, name, begin_d, begin_c, end_d, end_c, ...}
+
+        注意：T3 SQL2008R2 版的 GL_AccSum 表无 iyear 和 cCode_Name 字段，
+              年份由数据库名后缀（UFDATA_XXX_YYYY）承载，无需 WHERE 过滤；
+              科目名称需通过 cCode 关联 Code 表获取。
+              参见 get_bank_balance_from_gl_accsum() 注释。
         """
         if month == 0:
             sql = """
-                SELECT cCode, cCode_Name,
+                SELECT cCode,
                        mb=SUM(md), mc=SUM(mc),
                        md_f=SUM(md_f), mc_f=SUM(mc_f)
-                FROM (
-                    SELECT cCode, cCode_Name, md=md, mc=mc,
-                           md_f=md_f, mc_f=mc_f
-                    FROM GL_AccSum
-                    WHERE cCode LIKE %s
-                      AND iYear = %s
-                      AND iPeriod BETWEEN 1 AND 12
-                ) t
-                GROUP BY cCode, cCode_Name
-            """
-            params = (f"{subject_code}%", year)
-        else:
-            sql = """
-                SELECT cCode, cCode_Name, md, mc, md_f, mc_f
                 FROM GL_AccSum
                 WHERE cCode LIKE %s
-                  AND iYear = %s
+                  AND iPeriod BETWEEN 1 AND 12
+                GROUP BY cCode
+            """
+            params = (f"{subject_code}%",)
+        else:
+            sql = """
+                SELECT cCode, md, mc, md_f, mc_f
+                FROM GL_AccSum
+                WHERE cCode LIKE %s
                   AND iPeriod = %s
             """
-            params = (f"{subject_code}%", year, month)
+            params = (f"{subject_code}%", month)
 
         rows = self.connector.execute_query(sql, database=db_name,
                                             params=params)
@@ -75,153 +74,45 @@ class T3DataExtractor:
         :param subject_code_like: 科目编码模糊匹配，如 "6001%" 或 "5%"
         :param year: 年份
         :return: [{cCode, cCode_Name, iPeriod, md, mc, ...}, ...]
+
+        注意：T3 SQL2008R2 版的 GL_AccSum 表无 iyear 和 cCode_Name 字段，
+              年份由数据库名后缀（UFDATA_XXX_YYYY）承载，无需 WHERE 过滤；
+              科目名称需通过 cCode 关联 Code 表获取。
         """
         sql = """
-            SELECT cCode, cCode_Name, iPeriod,
+            SELECT cCode, iPeriod,
                    md, mc, md_f, mc_f
             FROM GL_AccSum
             WHERE cCode LIKE %s
-              AND iYear = %s
             ORDER BY cCode, iPeriod
         """
         return self.connector.execute_query(
-            sql, database=db_name, params=(subject_code_like, year)
+            sql, database=db_name, params=(subject_code_like,)
         )
 
     # ================================================================
-    # 收入科目查询（常用的用友T3收入类科目）
+    # 硬编码的科目代码已全部删除（不再使用6001/6401/6601科目体系）
+    # 所有收入/费用科目均通过 Code 表动态查询 5101/5501/5502 开头的科目
+    # 参见 get_revenue_subjects_from_code() 等方法
     # ================================================================
-    REVENUE_CODES = {
-        "油菜花收入": "600101",
-        "现金收入":   "600102",
-        "美团收入":   "600103",
-        "抖音收入":   "600104",
-        "其他业务收入": "6051",
-    }
 
-    COST_CODE = "6401"       # 主营业务成本
-    GROSS_CODE = None        # 毛利由计算得出
-
-    # 费用科目
-    EXPENSE_CODES = {
-        # 营业费用 - 6601 销售费用
-        "广告费":   "660101",
-        "物料费":   "660102",
-        "设备":     "660103",
-        "折旧费":   "660104",
-        "房租":     "660105",
-        "物业费":   "660106",
-        "电费":     "660107",
-        "修配费":   "660108",
-        "运杂费":   "660109",
-        "其他":     "660110",
-        # 管理费用 - 6602
-        "工资":     "660201",
-        "办公费":   "660202",
-        "差旅费":   "660203",
-        "业务招待费": "660204",
-        "员工福利": "660205",
-        "装修费":   "660206",
-        "开办费":   "660207",
-        "服务咨询费": "660208",
-        "社保":     "660209",
-        "管理公司费用分摊": "660210",
-        "奖金":     "660211",
-        "税费":     "660212",
-        # 财务费用 - 6603
-        "手续费":   "660301",
-    }
-
-    def get_monthly_revenue(self, db_name: str, year: int,
-                            months: list[int] = None) -> dict:
-        """
-        按月获取各收入科目数据
-        :return: {科目名: {1月: 值, 2月: 值, ...}, ...}
-        """
-        return self._get_subject_monthly(
-            db_name, year, self.REVENUE_CODES, months
-        )
-
-    def get_monthly_cost(self, db_name: str, year: int,
-                         months: list[int] = None) -> dict:
-        """按月获取主营业务成本"""
-        return self._get_subject_monthly(
-            db_name, year, {"主营业务成本": self.COST_CODE}, months
-        )
-
-    def get_monthly_expenses(self, db_name: str, year: int,
-                             months: list[int] = None) -> dict:
-        """按月获取各项费用"""
-        return self._get_subject_monthly(
-            db_name, year, self.EXPENSE_CODES, months
-        )
-
-    def _get_subject_monthly(self, db_name: str, year: int,
-                             code_map: dict,
-                             months: list[int] = None) -> dict:
-        """
-        通用：按科目编码映射获取各月数据
-        :param code_map: {显示名称: 科目编码}
-        :param months: 指定月份列表，None=全部月份
-        :return: {显示名称: {月份: 金额, ...}, ...}
-        """
-        result = {}
-        for display_name, code in code_map.items():
-            rows = self.get_subject_balances(db_name, f"{code}%", year)
-            monthly = {}
-            for row in rows:
-                period = row["iPeriod"]
-                if months and period not in months:
-                    continue
-                # 取贷方发生额 mc（收入类科目余额在贷方）
-                monthly[period] = float(row.get("mc", 0) or 0)
-            result[display_name] = monthly
-        return result
-
-    def get_monthly_sales_composition(self, db_name: str, year: int,
-                                      months: list[int] = None) -> dict:
-        """
-        获取销售额构成（各收入渠道明细）
-        用于填充模板中 (1)~(5) 各渠道收入行
-        """
-        return self._get_subject_monthly(
-            db_name, year, self.REVENUE_CODES, months
-        )
-
-    def compute_monthly_gross_profit(self, db_name: str, year: int,
-                                     months: list[int] = None) -> dict:
-        """
-        计算月毛利 = 总收入 - 成本
-        """
-        revenue = self.get_monthly_revenue(db_name, year, months)
-        cost = self.get_monthly_cost(db_name, year, months)
-
-        # 汇总总收入
-        total_revenue = {}
-        for name, mdata in revenue.items():
-            for m, val in mdata.items():
-                total_revenue[m] = total_revenue.get(m, 0) + val
-
-        # 取成本
-        cost_data = cost.get("主营业务成本", {})
-
-        gross = {}
-        for m in set(list(total_revenue.keys()) + list(cost_data.keys())):
-            gross[m] = total_revenue.get(m, 0) - cost_data.get(m, 0)
-
-        return gross
 
     # ================================================================
     # 科目表 Code 查询方法（用于动态行调整）
     # ================================================================
     def get_revenue_subjects_from_code(self, db_name: str) -> list[dict]:
         """
-        从 code 表查询所有 ccode 以 5101 开头的 6 位科目。
+        从 code 表查询所有 ccode 以 5101 开头的科目。
         这些科目将作为"销售业绩"与"主营业务成本"之间的行显示。
 
         T3 Code 表结构：
           ccode       VARCHAR(40)   - 科目编码
           ccode_name  VARCHAR(60)   - 科目名称
+
+        查询策略（V4.0 改进）：
+          1. 优先查询 ccode LIKE '5101%' 且 LEN(ccode)=6 的明细科目
+          2. 如果有6位明细科目，返回明细列表
+          3. 如果没有6位明细科目，查询 5101 一级科目作为兜底返回
 
         :param db_name: 账套数据库名，如 UFDATA_001_2024
         :return: [{ccode, ccode_name}, ...]，按 ccode 升序排列
@@ -229,26 +120,45 @@ class T3DataExtractor:
         # 注意：必须使用完全限定的表名 [{db_name}].dbo.Code，
         # 因为 connector.connect() 复用了已有连接，execute_query 的 database 参数
         # 在已有连接时不会切换到目标数据库。
-        sql = f"""
-            SELECT ccode, ccode_name
-            FROM [{db_name}].dbo.Code
-            WHERE ccode LIKE '5101%'
-              AND LEN(ccode) = 6
-              AND ccode NOT LIKE '%[^0-9]%'
-            ORDER BY ccode
-        """
-        try:
+        def _query_subjects(like_pattern: str) -> list[dict]:
+            """执行查询的辅助函数"""
+            sql = f"""
+                SELECT ccode, ccode_name
+                FROM [{db_name}].dbo.Code
+                WHERE ccode LIKE '{like_pattern}'
+                  AND ccode NOT LIKE '%[^0-9]%'
+                ORDER BY ccode
+            """
             rows = self.connector.execute_query(sql, database=db_name)
-            # 额外过滤：确保 ccode 确实是6位纯数字
             result = []
             for row in rows:
                 code = str(row.get("ccode", "")).strip()
                 name = str(row.get("ccode_name", "")).strip()
-                if len(code) == 6 and code.isdigit() and code.startswith("5101"):
+                if code.isdigit() and code.startswith("5101"):
                     result.append({"ccode": code, "ccode_name": name})
-            logger.info(f"  Code表查询 5101 科目: 共 {len(result)} 条: "
-                        f"{[r['ccode_name'] for r in result]}")
             return result
+
+        try:
+            # ---- 1. 优先查询6位明细科目 ----
+            result = _query_subjects('5101%')
+            result = [r for r in result if len(r['ccode']) == 6]
+
+            if result:
+                logger.info(f"  Code表查询 5101 明细科目: 共 {len(result)} 条: "
+                            f"{[r['ccode_name'] for r in result]}")
+                return result
+
+            # ---- 2. 无6位明细，查询5101一级科目作为兜底 ----
+            result = _query_subjects('5101')
+            result = [r for r in result if r['ccode'] == '5101']
+            if result:
+                logger.info(f"  无5101明细科目，使用一级科目5101: {result[0]['ccode_name']}")
+                return result
+
+            # ---- 3. 连5101一级科目都没有，返回空列表 ----
+            logger.info(f"  Code表查询 5101: 无任何5101科目记录")
+            return []
+
         except Exception as e:
             logger.warning(f"  查询 Code 表（5101科目）失败: {e}")
             return []
