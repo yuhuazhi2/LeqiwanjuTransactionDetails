@@ -417,4 +417,89 @@ class T3DataExtractor:
             return result
         except Exception as e:
             logger.warning(f"  批量查询 Code 表科目名称失败: {e}")
+    # ================================================================
+    # GL_AccSum 总账表查询 — 银行余额（V3.0 新增）
+    # ================================================================
+    # 功能说明：
+    #   从 GL_accsum（科目总账）表中查询银行存款科目（1002）
+    #   的期末余额 me 字段。用于填充报表最后一行"银行余额"的对应月份数据。
+    #
+    # GL_AccSum 表结构（用友T3标准版）：
+    #   ccode       VARCHAR(40)   - 科目编码
+    #   ccode_name  VARCHAR(60)   - 科目名称
+    #   iyear       INT           - 会计年度
+    #   iperiod     INT           - 会计期间（月份：1~12）
+    #   mb          DECIMAL       - 期初余额
+    #   md          DECIMAL       - 借方发生额
+    #   mc          DECIMAL       - 贷方发生额
+    #   me          DECIMAL       - 期末余额（核心字段，银行余额取此字段值）
+    #   md_f        DECIMAL       - 借方累计
+    #   mc_f        DECIMAL       - 贷方累计
+    # ================================================================
+
+    def get_bank_balance_from_gl_accsum(self, db_name: str,
+                                        year: int,
+                                        months: list[int] = None) -> dict[int, float]:
+        """
+        从 GL_accsum 总账表查询银行存款（1002科目）的各月期末余额 me。
+
+        银行余额 = 银行存款（1002科目）的期末余额 me 字段。
+
+        查询逻辑：
+          1. 查询 ccode = '1002' 的 GL_accsum 记录（精确匹配一级科目）。
+          2. 取 me（期末余额）字段，按 iperiod（月份）对应。
+          3. 返回 {月份: 期末余额} 字典。
+
+        注意：
+          - 使用完全限定的表名 [{db_name}].dbo.GL_AccSum 进行查询，
+            避免因连接复用导致的数据库切换问题。
+          - 如果某月份查无记录，该月份不返回键值（由调用方处理）。
+          - iperiod 字段的值与月份列直接对应：1月→1，2月→2，依此类推。
+
+        :param db_name: 账套数据库名，如 UFDATA_007_2026
+        :param year: 会计年度
+        :param months: 需要查询的月份列表，如 [1,2,3,4,5]；
+                       为 None 时查询全年 1~12 月
+        :return: {月份(int): 期末余额(float)}，
+                 如 {1: 12345.67, 2: 23456.78, ...}
+        """
+        if months is None:
+            months = list(range(1, 13))
+
+        # 银行余额 = 银行存款（1002 科目）的期末余额 me
+        # 精确匹配一级科目 ccode = '1002'，不含下级明细科目
+        # 注意：T3 SQL2008R2 版的 GL_AccSum 表无 iyear 字段，
+        #       年份由数据库名后缀（UFDATA_XXX_YYYY）承载，无需 WHERE 过滤。
+        #       该表可能跨年度包含记录，但通常各数据库只存储对应年度的数据。
+        sql = f"""
+            SELECT iperiod AS month_num, me
+            FROM [{db_name}].dbo.GL_AccSum
+            WHERE ccode = '1002'
+              AND iperiod BETWEEN %s AND %s
+            ORDER BY iperiod
+        """
+
+        try:
+            min_month = min(months)
+            max_month = max(months)
+            params = (min_month, max_month)
+
+            rows = self.connector.execute_query(sql, database=db_name,
+                                                params=params)
+            logger.info(f"  查询银行余额（GL_AccSum ccode=1002）: {db_name}, "
+                        f"月份范围={min_month}~{max_month}, "
+                        f"共 {len(rows)} 条记录")
+
+            # 构建 {月份: 期末余额} 字典
+            result = {}
+            for row in rows:
+                month_num = int(row["month_num"])
+                balance = float(row["me"] or 0)
+                result[month_num] = balance
+                logger.debug(f"    月份 {month_num}: 期末余额={balance:.2f}")
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"  查询银行余额（GL_AccSum）失败: {db_name}, 错误={e}")
             return {}

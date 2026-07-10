@@ -363,6 +363,42 @@ class ReportBuilder:
             except Exception as e:
                 logger.warning(f"  {sheet_name} 汇总行合计计算失败: {e}")
 
+        # ---- 步骤5.12：从 GL_AccSum 表查询银行余额并填列到"银行余额"行（V3.0 新增） ----
+        # 银行余额 = 银行存款（1002科目）的期末余额 me 字段
+        # 需要从各账套对应的数据库 UFDATA_XXX_YYYY 的 GL_AccSum 表中，
+        # 按 iperiod（月份）字段匹配月份列，取 me（期末余额）字段的值填入对应单元格。
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]
+            if sheet_name not in self._wb.sheetnames:
+                continue
+            ws = self._wb[sheet_name]
+
+            # 获取该账套对应的年度
+            year_str = ""
+            if account_years and acc.cAcc_Id in account_years:
+                year_str = str(account_years[acc.cAcc_Id])
+            if not year_str:
+                continue  # 无年度信息，跳过
+
+            # 构建数据库名（用友T3数据库命名规则：UFDATA_账套号_年度）
+            db_name = f"UFDATA_{acc.cAcc_Id.zfill(3)}_{year_str}"
+            try:
+                self._fill_bank_balance(ws, db_name, int(year_str))
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 银行余额填列失败: {e}")
+
+        # ---- 步骤5.13：为每个账套修复"业绩完成率"行的Excel公式（V2.9 新增） ----
+        # 需要在所有行/列结构调整完毕之后执行，确保行列号已稳定
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]
+            if sheet_name not in self._wb.sheetnames:
+                continue
+            ws = self._wb[sheet_name]
+            try:
+                self._fix_performance_formula(ws)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 业绩完成率公式修复失败: {e}")
+
         # ---- 步骤6：调整所有表页的合计列宽度（增加50%） ----
         for sheet_name in self._wb.sheetnames:
             ws = self._wb[sheet_name]
@@ -1753,6 +1789,208 @@ class ReportBuilder:
         self._wb.save(output_path)
         logger.info(f"框架雏形文件已保存: {output_path}")
         return os.path.abspath(output_path)
+
+    # ================================================================
+    # _fix_performance_formula — 修复"业绩完成率"行公式（V2.9 新增）
+    # ================================================================
+    # 功能说明：
+    #   扫描当前工作表，找到"业绩完成率"行、"目标预算（一档）"行和"销售业绩"行，
+    #   为业绩完成率行的每个月份列和年度合计列写入公式：
+    #     =IF(<销售业绩单元格>=0,"",<目标预算单元格>/<销售业绩单元格>)
+    #
+    #   此方法应在所有行/列结构调整完成后调用，确保行列号已稳定。
+    #   这样后续使用者手工填列第5行"销售业绩"时，
+    #   第三行"业绩完成率"会自动计算更新。
+    # ================================================================
+    def _fix_performance_formula(self, ws):
+        """
+        为当前工作表的"业绩完成率"行写入Excel公式。
+
+        :param ws: 目标工作表
+        """
+        # ---- 1. 扫描A列，定位关键行 ----
+        rate_row = None     # "业绩完成率"行号
+        target_row = None   # "目标预算（一档）"行号
+        sales_row = None    # "销售业绩"行号
+
+        for row_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, 1).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str == "业绩完成率":
+                rate_row = row_idx
+            elif cell_str == "目标预算（一档）" or cell_str == "目标预算":
+                target_row = row_idx
+            elif cell_str == "销售业绩":
+                sales_row = row_idx
+            if rate_row is not None and target_row is not None and sales_row is not None:
+                break
+
+        if rate_row is None:
+            logger.warning("  _fix_performance_formula: 未找到'业绩完成率'行，跳过")
+            return
+        if target_row is None:
+            logger.warning("  _fix_performance_formula: 未找到'目标预算'行，跳过")
+            return
+        if sales_row is None:
+            logger.warning("  _fix_performance_formula: 未找到'销售业绩'行，跳过")
+            return
+
+        logger.debug(f"  _fix_performance_formula 定位: "
+                      f"业绩完成率行{rate_row}, 目标预算行{target_row}, 销售业绩行{sales_row}")
+
+        # ---- 2. 扫描月份列和合计列，为每个数据列写入公式 ----
+        from openpyxl.utils import get_column_letter
+
+        COLUMN_MAP = {
+            "1月": 1, "2月": 2, "3月": 3, "4月": 4,
+            "5月": 5, "6月": 6, "7月": 7, "8月": 8,
+            "9月": 9, "10月": 10, "11月": 11, "12月": 12,
+        }
+
+        formula_count = 0
+        for col_idx in range(2, ws.max_column + 1):  # B列起
+            # 从第1行或第2行获取列标题
+            col_label = None
+            for check_row in (1, 2):
+                cell_val = ws.cell(check_row, col_idx).value
+                if cell_val:
+                    col_label = str(cell_val).strip()
+                    break
+            if not col_label:
+                continue
+
+            # 判断是否为月份列或合计列
+            is_month = col_label in COLUMN_MAP
+            is_total = "合计" in col_label or "汇总" in col_label
+            if not (is_month or is_total):
+                continue
+
+            col_letter = get_column_letter(col_idx)
+            # 公式：=IF(F5=0,"",F4/F5) 对应模板原始逻辑
+            # 其中F列替换为当前列，4替换为目标预算行号，5替换为销售业绩行号
+            formula = (f'=IF({col_letter}{sales_row}=0,"",'
+                       f'{col_letter}{target_row}/{col_letter}{sales_row})')
+
+            cell = ws.cell(rate_row, col_idx)
+            cell.value = formula
+            # 设置数字格式为金额格式（因为结果是比率，用百分比格式更合适，但保留原模板风格）
+            cell.number_format = self.CURRENCY_FORMAT
+            cell.font = self.DATA_FONT
+            cell.alignment = Alignment(horizontal="right")
+            cell.border = self.THIN_BORDER
+            formula_count += 1
+
+        logger.info(f"  _fix_performance_formula: 已写入 {formula_count} 个公式单元格")
+
+    # ================================================================
+    # _fill_bank_balance — 从 GL_AccSum 总账表填列银行余额数据（V3.0 新增）
+    # ================================================================
+    # 功能说明：
+    #   银行余额 = 银行存款（1002科目）的期末余额 me 字段。
+    #
+    #   流程：
+    #     1. 扫描工作表第1行（或第2行）的列标题，建立 {月份: Excel列号} 映射
+    #     2. 扫描 A 列，找到"银行余额"所在的行号
+    #     3. 调用 T3DataExtractor.get_bank_balance_from_gl_accsum() 查询各月
+    #        期末余额
+    #     4. 将查询结果填入对应行列单元格
+    #
+    #   注意：
+    #     - GL_AccSum 表的 iperiod 字段：1=1月，2=2月，……，12=12月
+    #     - me（期末余额）字段直接取值，无额外计算
+    #     - 如果某月份查无记录，该单元格留空（不写入0值，保持模板原始风格）
+    # ================================================================
+
+    def _fill_bank_balance(self, ws, db_name: str, year: int):
+        """
+        从 GL_AccSum 总账表查询银行存款（1002科目）的期末余额 me，
+        填入工作表的"银行余额"行。
+
+        银行余额 = 银行存款（1002科目）的期末余额 me 字段。
+
+        :param ws: 目标工作表（openpyxl Worksheet 对象）
+        :param db_name: 账套数据库名，如 UFDATA_007_2026
+        :param year: 会计年度
+        """
+        # ---- 1. 建立月份列映射 {月份数字: Excel列号} ----
+        # 月份标题映射
+        MONTH_MAP = {
+            "1月": 1, "2月": 2, "3月": 3,
+            "4月": 4, "5月": 5, "6月": 6,
+            "7月": 7, "8月": 8, "9月": 9,
+            "10月": 10, "11月": 11, "12月": 12,
+        }
+        month_col_map = {}  # {月份数字: Excel列号}
+        total_col = None    # "年度合计"列号
+
+        for col_idx in range(1, ws.max_column + 1):
+            # 先检查第1行，如果为空则检查第2行
+            cell_val = ws.cell(1, col_idx).value
+            if cell_val is None:
+                cell_val = ws.cell(2, col_idx).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+
+            if cell_str in MONTH_MAP:
+                month_col_map[MONTH_MAP[cell_str]] = col_idx
+            elif "合计" in cell_str or "汇总" in cell_str:
+                total_col = col_idx
+
+        if not month_col_map:
+            logger.warning(f"  _fill_bank_balance: 无法定位月份列，跳过数据库 {db_name}")
+            return
+        logger.debug(f"  _fill_bank_balance 月份列映射: {month_col_map}, 合计列: {total_col}")
+
+        # ---- 2. 扫描 A 列，找到"银行余额"所在行 ----
+        bank_balance_row = None
+        for row_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, 1).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str == "银行余额":
+                bank_balance_row = row_idx
+                break
+
+        if bank_balance_row is None:
+            logger.warning(f"  _fill_bank_balance: 未找到'银行余额'行，跳过数据库 {db_name}")
+            return
+        logger.debug(f"  _fill_bank_balance: 找到'银行余额'行号={bank_balance_row}")
+
+        # ---- 3. 调用数据提取器查询各月银行余额 ----
+        months = sorted(month_col_map.keys())  # 需要查询的月份列表
+        balances = self.extractor.get_bank_balance_from_gl_accsum(
+            db_name, year, months
+        )
+
+        if not balances:
+            logger.info(f"  {db_name}: 银行余额查询无数据，跳过填列")
+            return
+
+        logger.info(f"  {db_name}: 银行余额查询结果: {balances}")
+
+        # ---- 4. 将查询结果填入对应行列单元格 ----
+        filled_count = 0
+        for month_num, col_idx in month_col_map.items():
+            balance = balances.get(month_num)
+            if balance is None:
+                # 该月份无数据，跳过（不写入0值）
+                continue
+
+            cell = ws.cell(bank_balance_row, col_idx)
+            cell.value = balance
+            cell.number_format = self.CURRENCY_FORMAT
+            cell.font = self.DATA_FONT
+            cell.alignment = Alignment(horizontal="right")
+            cell.border = self.THIN_BORDER
+            filled_count += 1
+            logger.debug(f"    填列: 银行余额行{bank_balance_row}, "
+                         f"{month_num}月(列{col_idx}), 余额={balance:.2f}")
+
+        # ---- 5. 注意：银行余额的"年度合计"指标无实际意义，不填列 ----
+        # 每月的银行余额相互独立，汇总合计无法反映任何经营信息，
+        # 因此银行余额行与年度合计列的交叉单元格保持为空，不写入任何值。
+        # 如果该单元格之前被复制过边框或格式，也不做额外清除处理，
+        # 保持与模板原始风格一致。
+
+        logger.info(f"  {db_name}: 银行余额填列完成，共 {filled_count} 个单元格")
 
     @staticmethod
     def _open_file(filepath: str):
