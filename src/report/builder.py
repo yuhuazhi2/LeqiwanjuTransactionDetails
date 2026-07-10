@@ -557,26 +557,26 @@ class ReportBuilder:
             logger.info(f"    列调整完成: 删除{len(months_to_remove)}列, 新增{added_count}列")
 
     # ================================================================
-    # _adjust_sheet_subject_rows — 根据 code 表的 5101 科目调整行结构（V2.2 新增）
+    # _adjust_sheet_subject_rows — 根据 code 表的 5101/5102 科目调整行结构（V2.2 新增）
     # ================================================================
     # 功能说明：
     #   模板中 A5=销售业绩，A10=主营业务成本。
-    #   根据各账套 code 表中 ccode 开头为 5101 的 6 位数字科目列表，
+    #   根据各账套 code 表中 ccode 开头为 5101 或 5102 的数字科目列表，
     #   动态调整 A5 与 A10 之间的行：
     #   - 先删除 A5 与 A10 之间原有的全部行（原模板中的渠道明细行）
-    #   - 再根据 5101 科目数量插入对应行数
+    #   - 再根据 5101/5102 科目数量插入对应行数
     #   - 每行的 A 列填入对应科目的 ccode_name
     # ================================================================
 
     def _adjust_sheet_subject_rows(self, ws, db_name: str):
         """
-        根据指定账套 code 表中 5101 开头的科目列表，
+        根据指定账套 code 表中 5101/5102 开头的科目列表，
         动态调整工作表中 A5（销售业绩）与 A10（主营业务成本）之间的行。
 
         :param ws: 目标工作表
         :param db_name: 账套数据库名，如 UFDATA_007_2024
         """
-        # ---- 1. 查询该账套的 5101 科目列表 ----
+        # ---- 1. 查询该账套的 5101/5102 科目列表 ----
         revenue_subjects = self.extractor.get_revenue_subjects_from_code(db_name)
         target_count = len(revenue_subjects)
 
@@ -654,7 +654,7 @@ class ReportBuilder:
 
                 current_cost_row += 1
         else:
-            logger.info(f"    该账套无 5101 科目，不插入明细行")
+            logger.info(f"    该账套无 5101/5102 科目，不插入明细行")
 
     # ================================================================
     # _adjust_sheet_expense_rows — 根据 code 表的 5501 科目调整营业费用行结构（V2.3 新增）
@@ -1131,9 +1131,9 @@ class ReportBuilder:
                 continue
 
             # ---- 确定填入 md 还是 mc ----
-            # 收入类（5101xx）→ md（借方）
+            # 收入类（5101xx / 5102xx）→ md（借方）
             # 成本/费用类（5401/5501/5502/5503）→ mc（贷方）
-            is_revenue = ccode.startswith("5101")
+            is_revenue = ccode.startswith(("5101", "5102"))
             is_cost = ccode.startswith("5401")
             is_expense = (ccode.startswith("5501") or
                           ccode.startswith("5502") or

@@ -100,19 +100,31 @@ class T3DataExtractor:
     # ================================================================
     # 科目表 Code 查询方法（用于动态行调整）
     # ================================================================
+    # 收入科目查询策略（V5.0 改进）：
+    #   同时处理两个收入科目族：
+    #     - 5101（主营业务收入）
+    #     - 5102（其他业务收入）
+    #   对每个科目前缀的查询策略相同：
+    #     1. 优先查询6位明细科目
+    #     2. 无明细科目时查询一级科目作为兜底
+    #     3. 连一级科目都不存在则跳过
+    # ================================================================
+
     def get_revenue_subjects_from_code(self, db_name: str) -> list[dict]:
         """
-        从 code 表查询所有 ccode 以 5101 开头的科目。
+        从 code 表查询所有 ccode 以 5101 或 5102 开头的科目。
         这些科目将作为"销售业绩"与"主营业务成本"之间的行显示。
 
         T3 Code 表结构：
           ccode       VARCHAR(40)   - 科目编码
           ccode_name  VARCHAR(60)   - 科目名称
 
-        查询策略（V4.0 改进）：
-          1. 优先查询 ccode LIKE '5101%' 且 LEN(ccode)=6 的明细科目
-          2. 如果有6位明细科目，返回明细列表
-          3. 如果没有6位明细科目，查询 5101 一级科目作为兜底返回
+        查询策略（V5.0 改进）：
+          1. 同时查询 5101 和 5102 两个科目前缀族
+          2. 对每个科目前缀族，按相同策略：
+             a. 优先查询6位明细科目（LEN(ccode)=6）
+             b. 无明细科目时退而查询一级科目作为兜底
+          3. 结果按 ccode 升序排列，5101 在前、5102 在后
 
         :param db_name: 账套数据库名，如 UFDATA_001_2024
         :return: [{ccode, ccode_name}, ...]，按 ccode 升序排列
@@ -134,33 +146,45 @@ class T3DataExtractor:
             for row in rows:
                 code = str(row.get("ccode", "")).strip()
                 name = str(row.get("ccode_name", "")).strip()
-                if code.isdigit() and code.startswith("5101"):
+                if code.isdigit():
                     result.append({"ccode": code, "ccode_name": name})
             return result
 
         try:
-            # ---- 1. 优先查询6位明细科目 ----
-            result = _query_subjects('5101%')
-            result = [r for r in result if len(r['ccode']) == 6]
+            all_subjects = []
 
-            if result:
-                logger.info(f"  Code表查询 5101 明细科目: 共 {len(result)} 条: "
-                            f"{[r['ccode_name'] for r in result]}")
-                return result
+            # ---- 分别处理 5101 和 5102 两个科目前缀族 ----
+            for prefix in ("5101", "5102"):
+                # a. 优先查询6位明细科目
+                details = _query_subjects(f'{prefix}%')
+                details = [r for r in details if len(r['ccode']) == 6]
 
-            # ---- 2. 无6位明细，查询5101一级科目作为兜底 ----
-            result = _query_subjects('5101')
-            result = [r for r in result if r['ccode'] == '5101']
-            if result:
-                logger.info(f"  无5101明细科目，使用一级科目5101: {result[0]['ccode_name']}")
-                return result
+                if details:
+                    logger.info(f"  Code表查询 {prefix} 明细科目: 共 {len(details)} 条: "
+                                f"{[r['ccode_name'] for r in details]}")
+                    all_subjects.extend(details)
+                    continue
 
-            # ---- 3. 连5101一级科目都没有，返回空列表 ----
-            logger.info(f"  Code表查询 5101: 无任何5101科目记录")
-            return []
+                # b. 无6位明细，查询一级科目作为兜底
+                parent = _query_subjects(prefix)
+                parent = [r for r in parent if r['ccode'] == prefix]
+                if parent:
+                    logger.info(f"  无{prefix}明细科目，使用一级科目{prefix}: {parent[0]['ccode_name']}")
+                    all_subjects.extend(parent)
+                    continue
+
+                # c. 连一级科目都不存在，跳过
+                logger.info(f"  Code表查询 {prefix}: 无任何{prefix}科目记录")
+
+            # ---- 按 ccode 升序排列 ----
+            all_subjects.sort(key=lambda x: x['ccode'])
+
+            if not all_subjects:
+                logger.info(f"  Code表查询 5101/5102: 无任何收入科目记录")
+            return all_subjects
 
         except Exception as e:
-            logger.warning(f"  查询 Code 表（5101科目）失败: {e}")
+            logger.warning(f"  查询 Code 表（5101/5102科目）失败: {e}")
             return []
 
     def get_expense_subjects_from_code(self, db_name: str) -> list[dict]:
