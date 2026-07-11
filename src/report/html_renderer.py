@@ -58,6 +58,7 @@ class HtmlRenderer:
         "目标预算（一档）":     COLOR_TARGET,
         "销售业绩":             COLOR_SALES,
         "主营业务成本":         COLOR_COST,
+        "费用支出":             COLOR_RATE,      # 费用支出 - 浅灰色
         "费用率":               COLOR_RATE,
         "利润":                 COLOR_PROFIT,
         "利润率":               COLOR_PROFIT,
@@ -284,6 +285,12 @@ class HtmlRenderer:
         rows.append({"label": "毛利率", "row_type": "gross_rate",
                      "is_calculated": True})
 
+        # ---- 费用支出/费用率（V2.0 新增：复刻模板第13/14行） ----
+        rows.append({"label": "费用支出", "row_type": "expense_total",
+                     "is_calculated": True})
+        rows.append({"label": "费用率", "row_type": "expense_rate",
+                     "is_calculated": True})
+
         # ---- 营业费用标题行 ----
         rows.append({"label": "营业费用", "row_type": "expense_header",
                      "is_calculated": True})
@@ -339,9 +346,7 @@ class HtmlRenderer:
         # 方法从 GL_AccVouch 的期间损益结转凭证中自动匹配 5503 开头的 ccode。
         # 若需要显式添加 5503 明细行，可将来通过 Code 表动态查询。
 
-        # ---- 费用率/利润/利润率 ----
-        rows.append({"label": "费用率", "row_type": "expense_rate",
-                     "is_calculated": True})
+        # ---- 利润/利润率 ----
         rows.append({"label": "利润", "row_type": "profit",
                      "is_calculated": True})
         rows.append({"label": "利润率", "row_type": "profit_rate",
@@ -649,8 +654,10 @@ class HtmlRenderer:
           - 销售业绩行：取"销售业绩"与"主营业务成本"之间所有行的合计
           - 营业费用行：取"营业费用"与"管理费用"之间有标签行的合计
           - 管理费用行：取"管理费用"与"财务费用"之间有标签行的合计
+          - 费用支出行：营业费用 + 管理费用 + 财务费用（各列的合计）
+          - 费用率行：费用支出 / 销售业绩 * 100
           - 合计列：每行各月份之和
-          - 利润行：销售业绩 - 主营业务成本 - 营业费用 - 管理费用 - 财务费用
+          - 利润行：销售业绩 - 主营业务成本 - 费用支出
           - 利润率行：利润 / 销售业绩 * 100
 
         :param cell_data: {(row_idx, col_key): value}，将被就地更新
@@ -666,6 +673,8 @@ class HtmlRenderer:
         exp_header_idx = key_indices.get("expense_header")
         mgr_header_idx = key_indices.get("manage_header")
         fin_header_idx = key_indices.get("finance_header")
+        exp_total_idx = key_indices.get("expense_total")
+        exp_rate_idx = key_indices.get("expense_rate")
         profit_idx = key_indices.get("profit")
         profit_rate_idx = key_indices.get("profit_rate")
 
@@ -710,18 +719,41 @@ class HtmlRenderer:
                 )
                 _set_val(mgr_header_idx, col["key"], total)
 
-        # ---- 5. 所有行的合计列（利润行/利润率行/银行余额行暂不处理，由后面覆盖） ----
-        # 银行余额是时点数，每月独立，年度合计无意义，不计算
+        # ---- 5. 费用支出合计 = 营业费用 + 管理费用 + 财务费用 ----
+        if exp_total_idx is not None:
+            all_cols = list(month_cols)
+            if total_col:
+                all_cols.append(total_col)
+            for col in all_cols:
+                exp_v = _get_val(exp_header_idx, col["key"]) if exp_header_idx else 0
+                mgr_v = _get_val(mgr_header_idx, col["key"]) if mgr_header_idx else 0
+                fin_v = _get_val(fin_header_idx, col["key"]) if fin_header_idx else 0
+                total_expense = exp_v + mgr_v + fin_v
+                _set_val(exp_total_idx, col["key"], total_expense)
+
+        # ---- 6. 费用率 = 费用支出 / 销售业绩 * 100 ----
+        if exp_rate_idx is not None:
+            all_cols = list(month_cols)
+            if total_col:
+                all_cols.append(total_col)
+            for col in all_cols:
+                te = _get_val(exp_total_idx, col["key"]) if exp_total_idx else 0
+                sv = _get_val(sales_idx, col["key"]) if sales_idx else 0
+                rate_val = (te / sv * 100) if sv != 0 else 0
+                _set_val(exp_rate_idx, col["key"], rate_val)
+
+        # ---- 7. 所有行的合计列（费用支出/费用率/利润/利润率/银行余额行暂不处理，由后面覆盖） ----
         bank_idx = key_indices.get("bank_balance")
         if total_col is not None:
-            skip_rows = {profit_idx, profit_rate_idx, bank_idx}
+            skip_rows = {exp_total_idx, exp_rate_idx,
+                         profit_idx, profit_rate_idx, bank_idx}
             for row_i in range(len(rows)):
                 if row_i in skip_rows:
                     continue
                 total = sum(_get_val(row_i, col["key"]) for col in month_cols)
                 _set_val(row_i, total_col["key"], total)
 
-        # ---- 6. 利润 = 销售业绩 - 成本 - 营业费用 - 管理费用 - 财务费用 ----
+        # ---- 8. 利润 = 销售业绩 - 成本 - 费用支出 ----
         if profit_idx is not None:
             all_cols = list(month_cols)
             if total_col:
@@ -729,13 +761,11 @@ class HtmlRenderer:
             for col in all_cols:
                 sales_v = _get_val(sales_idx, col["key"]) if sales_idx else 0
                 cost_v = _get_val(cost_idx, col["key"]) if cost_idx else 0
-                exp_v = _get_val(exp_header_idx, col["key"]) if exp_header_idx else 0
-                mgr_v = _get_val(mgr_header_idx, col["key"]) if mgr_header_idx else 0
-                fin_v = _get_val(fin_header_idx, col["key"]) if fin_header_idx else 0
-                profit_val = sales_v - cost_v - exp_v - mgr_v - fin_v
+                te_v = _get_val(exp_total_idx, col["key"]) if exp_total_idx else 0
+                profit_val = sales_v - cost_v - te_v
                 _set_val(profit_idx, col["key"], profit_val)
 
-        # ---- 7. 利润率 = 利润 / 销售业绩 * 100（百分比） ----
+        # ---- 9. 利润率 = 利润 / 销售业绩 * 100（百分比） ----
         if profit_rate_idx is not None:
             all_cols = list(month_cols)
             if total_col:
@@ -746,7 +776,7 @@ class HtmlRenderer:
                 rate_val = (pv / sv * 100) if sv != 0 else 0
                 _set_val(profit_rate_idx, col["key"], rate_val)
 
-        logger.debug("  汇总行合计计算完成")
+        logger.debug("  汇总行合计计算完成（含费用支出/费用率）")
 
     # ================================================================
     # HTML 渲染
@@ -930,13 +960,17 @@ tbody td:first-child {
 .row-performance td { background: #E8D5F5; }
 .row-target td { background: #D5F5E3; }
 .row-sales td { background: #D6EAF8; }
+.row-revenue-detail td { background: #EBF5FB; }     /* 收入明细 - 浅蓝（比销售业绩略浅，体现从属关系） */
 .row-cost td { background: #FDEBD0; }
+.row-gross-profit td { background: #D5F5E3; }       /* 毛利 - 浅绿 */
+.row-gross-rate td { background: #F2F3F4; }         /* 毛利率 - 浅灰 */
 .row-expense-header td { background: #F9E79F; }
 .row-manage-header td { background: #F9E79F; }
 .row-finance-header td { background: #F9E79F; }
 .row-expense-detail td { background: #FCF3CF; }
 .row-manage-detail td { background: #FCF3CF; }
 .row-finance-detail td { background: #FCF3CF; }
+.row-expense-total td { background: #F2F3F4; }   /* 费用支出 - 浅灰 */
 .row-expense-rate td { background: #F2F3F4; }
 .row-profit td { background: #AED6F1; }
 .row-profit-rate td { background: #AED6F1; }
@@ -1022,7 +1056,7 @@ td.num.negative { color: #c0392b; }
                     cells += "<td></td>\n"
 
             body_rows += (
-                f'<tr class="row-{row_type}">\n'
+                f'<tr class="row-{row_type.replace("_", "-")}">\n'
                 f'<td>{label_display}</td>\n{cells}'
                 f'</tr>\n'
             )
