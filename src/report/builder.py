@@ -12,6 +12,8 @@ from typing import Optional
 
 from copy import copy
 
+from src.utils.browser_utils import open_file_with_firefox
+
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
@@ -606,7 +608,7 @@ class ReportBuilder:
 
                 # 在新行 A 列填入科目名称（前加缩进空格，与模板中渠道明细行风格一致）
                 cell = ws.cell(insert_row, 1)
-                cell.value = f" {subject['ccode_name']}"
+                cell.value = f"    {subject['ccode_name']}"
                 # 复制样式：从上一行 A 列复制字体、边框、对齐、填充
                 prev_row = insert_row - 1
                 if prev_row >= 1:
@@ -739,7 +741,7 @@ class ReportBuilder:
             ws.insert_rows(insert_row, 1)
 
             cell = ws.cell(insert_row, 1)
-            cell.value = f" {subject['ccode_name']}"
+            cell.value = f"    {subject['ccode_name']}"
 
             # 设置 A 列字体为宋体12号加粗（与费用率等标题行一致）
             cell.font = Font(name="宋体", size=12, bold=True)
@@ -854,7 +856,7 @@ class ReportBuilder:
             ws.insert_rows(insert_row, 1)
 
             cell = ws.cell(insert_row, 1)
-            cell.value = f" {subject['ccode_name']}"
+            cell.value = f"    {subject['ccode_name']}"
 
             # 设置 A 列字体为宋体12号加粗（与费用率等标题行一致）
             cell.font = Font(name="宋体", size=12, bold=True)
@@ -2018,8 +2020,5 @@ class ReportBuilder:
 
     @staticmethod
     def _open_file(filepath: str):
-        """尝试自动打开文件（Windows系统）"""
-        try:
-            os.startfile(filepath)
-        except Exception as e:
-            logger.warning(f"无法自动打开文件: {e}")
+        """尝试自动打开文件，HTML 文件优先使用火狐浏览器"""
+        open_file_with_firefox(filepath)

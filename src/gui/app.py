@@ -19,6 +19,8 @@ import os
 import sys
 from datetime import datetime
 
+from src.utils.browser_utils import open_file_with_firefox
+
 # 确保项目根目录在 sys.path 中
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROJECT_ROOT not in sys.path:
@@ -282,7 +284,7 @@ class MainWindow:
 
         # ---- 主按钮：完整报表生成（绿色） ----
         self.btn_generate = tk.Button(
-            action_frame, text="生成合并汇总报表", width=22,
+            action_frame, text="生成合并汇总报表", width=15,
             command=self._generate_report,
             state="disabled",
             bg="#4CAF50", fg="white", font=("微软雅黑", 9, "bold"),
@@ -603,10 +605,10 @@ class MainWindow:
             f"是否立即打开最后一个文件预览？"
         )
         if result and output_paths:
-            try:
-                os.startfile(output_paths[-1])
-            except Exception:
-                pass
+            # 使用火狐浏览器打开最后一个 HTML 文件（若有），
+            # 或打开最后一个 Excel 文件
+            last_file = output_paths[-1]
+            open_file_with_firefox(last_file)
 
     def _on_generate_failed(self, error_msg: str):
         """框架生成失败"""

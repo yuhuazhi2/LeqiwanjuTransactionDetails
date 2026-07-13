@@ -274,7 +274,7 @@ class HtmlRenderer:
         # 如果某账套无 5101 科目，则不插入任何收入明细行（与 Excel builder 行为一致）
         if revenue_subjects:
             for subj in revenue_subjects:
-                rows.append({"label": f"  {subj['ccode_name']}",
+                rows.append({"label": subj['ccode_name'],
                              "row_type": "revenue_detail",
                              "is_calculated": False})
 
@@ -298,7 +298,7 @@ class HtmlRenderer:
         # ---- 营业费用明细（5501 科目 + 间隔空白行） ----
         if expense_subjects:
             for subj in expense_subjects:
-                rows.append({"label": f"  {subj['ccode_name']}",
+                rows.append({"label": subj['ccode_name'],
                              "row_type": "expense_detail",
                              "is_calculated": False})
                 # 每个科目行之后留一个空白行（与Excel行为一致）
@@ -308,7 +308,7 @@ class HtmlRenderer:
             # 默认营业费用科目列表
             for exp_name in ["广告费", "物料费", "设备", "折旧费", "房租",
                              "物业费", "电费", "修配费", "运杂费", "其他"]:
-                rows.append({"label": f"  {exp_name}",
+                rows.append({"label": exp_name,
                              "row_type": "expense_detail",
                              "is_calculated": False})
                 rows.append({"label": "", "row_type": "blank",
@@ -321,7 +321,7 @@ class HtmlRenderer:
         # ---- 管理费用明细（5502 科目 + 间隔空白行） ----
         if manage_subjects:
             for subj in manage_subjects:
-                rows.append({"label": f"  {subj['ccode_name']}",
+                rows.append({"label": subj['ccode_name'],
                              "row_type": "manage_detail",
                              "is_calculated": False})
                 rows.append({"label": "", "row_type": "blank",
@@ -331,7 +331,7 @@ class HtmlRenderer:
             for mgr_name in ["工资", "办公费", "差旅费", "业务招待费",
                              "员工福利", "装修费", "开办费", "服务咨询费",
                              "社保", "管理公司费用分摊", "奖金", "税费"]:
-                rows.append({"label": f"  {mgr_name}",
+                rows.append({"label": mgr_name,
                              "row_type": "manage_detail",
                              "is_calculated": False})
                 rows.append({"label": "", "row_type": "blank",
@@ -956,6 +956,10 @@ tbody td:first-child {
     padding-left: 8px;
 }
 
+/* ========== 行标签缩进层级 ========== */
+td.indent-1 { padding-left: 24px !important; }
+td.indent-2 { padding-left: 36px !important; }
+
 /* ========== 行背景色（严格复刻 Excel 颜色方案） ========== */
 .row-performance td { background: #E8D5F5; }
 .row-target td { background: #D5F5E3; }
@@ -1031,6 +1035,9 @@ td.num.negative { color: #c0392b; }
             header_cells += f"<th>{self._escape_html(col['label'])}</th>\n"
 
         # ---- 数据行 ----
+        # 定义需要缩进的 row_type
+        INDENT_TYPES = {"revenue_detail", "expense_detail", "manage_detail", "finance_detail"}
+        
         body_rows = ""
         for row_i, row in enumerate(rows):
             row_type = row["row_type"]
@@ -1040,6 +1047,11 @@ td.num.negative { color: #c0392b; }
                 label_display = "&nbsp;"
             else:
                 label_display = self._escape_html(label)
+
+            # 判断第一列是否需要缩进
+            label_class = ""
+            if row_type in INDENT_TYPES:
+                label_class = ' class="indent-1"'
 
             cells = ""
             for col in columns:
@@ -1057,7 +1069,7 @@ td.num.negative { color: #c0392b; }
 
             body_rows += (
                 f'<tr class="row-{row_type.replace("_", "-")}">\n'
-                f'<td>{label_display}</td>\n{cells}'
+                f'<td{label_class}>{label_display}</td>\n{cells}'
                 f'</tr>\n'
             )
 
