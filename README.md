@@ -67,7 +67,7 @@ LeqiwanjuTransactionDetails/
 
 **方式二**：命令行执行
 ```cmd
-cd G:\JetBrains\PycharmProjects\LeqiwanjuTransactionDetails
+cd LeqiwanjuTransactionDetails
 pip install openpyxl pymssql pyodbc pyyaml -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 

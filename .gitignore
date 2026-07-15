@@ -19,11 +19,12 @@ logs/
 # 输出目录
 output/
 
-# IDE 配置（可选，如果大家共享则保留 .idea 项目配置）
+# IDE 配置
 .idea/
+.vscode/
 
-# 数据库密码等敏感信息
-# connection_profile.json 包含数据库密码，绝对不能上传
+# 数据库密码等敏感信息（绝对不能上传）
+config/settings.yaml
 config/connection_profile.json
 
 # 操作系统文件
@@ -32,7 +33,9 @@ Thumbs.db
 
 # 测试输出
 *.tmp
-test_temp.xlsx
+test_*.xlsx
+test_*.txt
+test_*.py
 
 # 一次性分析/验证/辅助脚本（根目录下的单文件临时脚本）
 /verify_rows.py
@@ -43,3 +46,10 @@ test_temp.xlsx
 /check_rows.py
 /test_style_changes.py
 scripts/
+verify_*.py
+fix_*.py
+debug_*.py
+
+# Git 相关
+*.orig
+*.patch

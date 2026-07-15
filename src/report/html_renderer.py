@@ -159,6 +159,14 @@ class HtmlRenderer:
             # ---- 6. 计算汇总行合计 ----
             self._calculate_summary_sums(cell_data, rows, columns)
 
+            # ---- 6.5 填列营业费用与管理费用明细空白行的费用率（V3.1 新增） ----
+            # 费用率 = 上方最近费用明细行的值 ÷ 销售业绩行的值
+            # 结果作为百分比字符串（如 "12.34%"）存入 cell_data，
+            # 覆盖原 float 值，以便 _build_table 直接以百分比格式显示。
+            self._fill_expense_rate_data(cell_data, rows, columns,
+                                          extractor, db_connector,
+                                          db_name, int(year_str))
+
             sheets_data.append({
                 "sheet_name": sheet_name,
                 "acc_name": acc.cAcc_Name,
@@ -688,14 +696,39 @@ class HtmlRenderer:
             if val != 0:
                 cell_data[(row_i, col_key)] = val
 
-        # ---- 2. 销售业绩合计：区间内所有行的合计 ----
+        # ---- 备份销售业绩行的原始值（V3.2 新增） ----
+        # 步骤2会覆盖sales_idx的月份列值（当明细区域合计为0时），
+        # 导致后续费用率计算（_fill_expense_rate_data）分母为0。
+        # 备份原始值供步骤2之后恢复。
+        sales_raw = {}
+        if sales_idx is not None:
+            for col in month_cols + ([total_col] if total_col else []):
+                sales_raw[col["key"]] = _get_val(sales_idx, col["key"])
+
+        # ---- 2. 销售业绩合计：区间内所有行的合计（V3.2 修复：同时处理合计列） ----
+        # 业绩收入与主营业务成本之间的明细行，按月份列和合计列分别合计。
+        # 合计列的处理使得后续费用率/利润率计算的分母有值。
         if sales_idx is not None and cost_idx is not None and sales_idx < cost_idx:
-            for col in month_cols:
+            all_sales_cols = list(month_cols)
+            if total_col:
+                all_sales_cols.append(total_col)
+            for col in all_sales_cols:
                 total = sum(
                     _get_val(r, col["key"])
                     for r in range(sales_idx + 1, cost_idx)
                 )
                 _set_val(sales_idx, col["key"], total)
+
+        # ---- 恢复销售业绩行原始值（V3.2 新增） ----
+        if sales_idx is not None:
+            all_restore_cols = list(month_cols)
+            if total_col:
+                all_restore_cols.append(total_col)
+            for col in all_restore_cols:
+                current_val = _get_val(sales_idx, col["key"])
+                orig_val = sales_raw.get(col["key"], 0.0)
+                if current_val == 0.0 and orig_val != 0.0:
+                    cell_data[(sales_idx, col["key"])] = orig_val
 
         # ---- 3. 营业费用合计：区间内有标签行的合计 ----
         if exp_header_idx is not None and mgr_header_idx is not None \
@@ -719,33 +752,13 @@ class HtmlRenderer:
                 )
                 _set_val(mgr_header_idx, col["key"], total)
 
-        # ---- 5. 费用支出合计 = 营业费用 + 管理费用 + 财务费用 ----
-        if exp_total_idx is not None:
-            all_cols = list(month_cols)
-            if total_col:
-                all_cols.append(total_col)
-            for col in all_cols:
-                exp_v = _get_val(exp_header_idx, col["key"]) if exp_header_idx else 0
-                mgr_v = _get_val(mgr_header_idx, col["key"]) if mgr_header_idx else 0
-                fin_v = _get_val(fin_header_idx, col["key"]) if fin_header_idx else 0
-                total_expense = exp_v + mgr_v + fin_v
-                _set_val(exp_total_idx, col["key"], total_expense)
-
-        # ---- 6. 费用率 = 费用支出 / 销售业绩 * 100 ----
-        if exp_rate_idx is not None:
-            all_cols = list(month_cols)
-            if total_col:
-                all_cols.append(total_col)
-            for col in all_cols:
-                te = _get_val(exp_total_idx, col["key"]) if exp_total_idx else 0
-                sv = _get_val(sales_idx, col["key"]) if sales_idx else 0
-                rate_val = (te / sv * 100) if sv != 0 else 0
-                _set_val(exp_rate_idx, col["key"], rate_val)
-
-        # ---- 7. 所有行的合计列（费用支出/费用率/利润/利润率/银行余额行暂不处理，由后面覆盖） ----
+        # ---- 5. 所有普通行的合计列（V3.2 优化：移到费用支出/费用率/利润计算之前） ----
+        # 先计算各普通行的合计列（按月份列求和），使得营业费用/管理费用/财务费用
+        # 三行的合计列有正确值。后续费用支出/费用率/利润/利润率计算时可以直接引用
+        # 这些合计列值，避免 0+0+0=0 的错误。
         bank_idx = key_indices.get("bank_balance")
         if total_col is not None:
-            skip_rows = {exp_total_idx, exp_rate_idx,
+            skip_rows = {sales_idx, exp_total_idx, exp_rate_idx,
                          profit_idx, profit_rate_idx, bank_idx}
             for row_i in range(len(rows)):
                 if row_i in skip_rows:
@@ -753,15 +766,42 @@ class HtmlRenderer:
                 total = sum(_get_val(row_i, col["key"]) for col in month_cols)
                 _set_val(row_i, total_col["key"], total)
 
+        # ---- 6. 费用支出合计 = 营业费用 + 管理费用 + 财务费用 ----
+        # V3.2 修复：此时 exp_header/mgr_header/fin_header 三行的合计列已在步骤5
+        # 中正确填充，费用支出合计列可直接引用这些值，不会算错。
+        # 统一使用 is not None 判断，防止 idx=0 的 falsy 陷阱。
+        if exp_total_idx is not None:
+            all_cols = list(month_cols)
+            if total_col:
+                all_cols.append(total_col)
+            for col in all_cols:
+                exp_v = _get_val(exp_header_idx, col["key"]) if exp_header_idx is not None else 0
+                mgr_v = _get_val(mgr_header_idx, col["key"]) if mgr_header_idx is not None else 0
+                fin_v = _get_val(fin_header_idx, col["key"]) if fin_header_idx is not None else 0
+                total_expense = exp_v + mgr_v + fin_v
+                # 费用支出是汇总行，即使为0也应显示
+                cell_data[(exp_total_idx, col["key"])] = total_expense
+
+        # ---- 7. 费用率 = 费用支出 / 销售业绩 * 100（百分比字符串） ----
+        if exp_rate_idx is not None:
+            all_cols = list(month_cols)
+            if total_col:
+                all_cols.append(total_col)
+            for col in all_cols:
+                te = _get_val(exp_total_idx, col["key"]) if exp_total_idx is not None else 0
+                sv = _get_val(sales_idx, col["key"]) if sales_idx is not None else 0
+                rate_val = (te / sv * 100) if sv != 0 else 0
+                cell_data[(exp_rate_idx, col["key"])] = f"{rate_val:.2f}%"
+
         # ---- 8. 利润 = 销售业绩 - 成本 - 费用支出 ----
         if profit_idx is not None:
             all_cols = list(month_cols)
             if total_col:
                 all_cols.append(total_col)
             for col in all_cols:
-                sales_v = _get_val(sales_idx, col["key"]) if sales_idx else 0
-                cost_v = _get_val(cost_idx, col["key"]) if cost_idx else 0
-                te_v = _get_val(exp_total_idx, col["key"]) if exp_total_idx else 0
+                sales_v = _get_val(sales_idx, col["key"]) if sales_idx is not None else 0
+                cost_v = _get_val(cost_idx, col["key"]) if cost_idx is not None else 0
+                te_v = _get_val(exp_total_idx, col["key"]) if exp_total_idx is not None else 0
                 profit_val = sales_v - cost_v - te_v
                 _set_val(profit_idx, col["key"], profit_val)
 
@@ -771,12 +811,132 @@ class HtmlRenderer:
             if total_col:
                 all_cols.append(total_col)
             for col in all_cols:
-                pv = _get_val(profit_idx, col["key"]) if profit_idx else 0
-                sv = _get_val(sales_idx, col["key"]) if sales_idx else 0
+                pv = _get_val(profit_idx, col["key"]) if profit_idx is not None else 0
+                sv = _get_val(sales_idx, col["key"]) if sales_idx is not None else 0
                 rate_val = (pv / sv * 100) if sv != 0 else 0
                 _set_val(profit_rate_idx, col["key"], rate_val)
 
-        logger.debug("  汇总行合计计算完成（含费用支出/费用率）")
+        logger.debug("  汇总行合计计算完成（含费用支出/费用率 V3.2 最终修复版）")
+
+    # ================================================================
+    # _fill_expense_rate_data — 为营业费用/管理费用明细空白行填列费用率（V3.1 新增）
+    # ================================================================
+    # 功能说明：
+    #   营业费用与管理费用区域的每个费用明细行下方都有一个空白行，
+    #   本方法为这些空白行的各月份列及年度合计列，计算并填列费用率：
+    #
+    #     费用率 = 上方最近费用明细行的值 ÷ 销售业绩行的值
+    #
+    #   结果以百分比字符串（如 "12.34%"）存入 cell_data，
+    #   覆盖原 float 值，_build_table 检测到字符串值时直接显示而不做数值格式化。
+    #
+    # 设计要点：
+    #   - 扫描 rows 列表的 row_type 字段定位关键行
+    #   - 对空白行（row_type="blank"）之前的最近 expense_detail/manage_detail 行作为分子行
+    #   - 分母行始终是 row_type="sales" 所在行
+    #   - 分母为 0 时留空（不写入 cell_data）
+    # ================================================================
+
+    def _fill_expense_rate_data(self, cell_data: dict, rows: list[dict],
+                                 columns: list[dict],
+                                 extractor: T3DataExtractor,
+                                 db_connector: DatabaseConnector,
+                                 db_name: str, year: int):
+        """
+        为营业费用和管理费用明细空白行填列费用率（百分比字符串）。
+
+        费用率 = 上方最近费用明细行的值 ÷ 销售业绩行的值，
+        结果以 "12.34%" 格式的字符串存入 cell_data。
+
+        :param cell_data: {(row_idx, col_key): value}，将被就地更新
+        :param rows: 行标签列表
+        :param columns: 列结构列表
+        :param extractor: 数据提取器（保留参数，暂未使用但保持接口一致性）
+        :param db_connector: 数据库连接器（保留参数）
+        :param db_name: 账套数据库名（保留参数）
+        :param year: 会计年度（保留参数）
+        """
+        # ---- 1. 定位关键行索引 ----
+        sales_idx = None        # "销售业绩"行索引
+        exp_header_idx = None   # "营业费用"标题行索引
+        mgr_header_idx = None   # "管理费用"标题行索引
+        fin_header_idx = None   # "财务费用"标题行索引
+
+        for i, row in enumerate(rows):
+            rt = row["row_type"]
+            if rt == "sales":
+                sales_idx = i
+            elif rt == "expense_header":
+                exp_header_idx = i
+            elif rt == "manage_header":
+                mgr_header_idx = i
+            elif rt == "finance_header":
+                fin_header_idx = i
+
+        if sales_idx is None:
+            logger.warning("  _fill_expense_rate_data: 未找到销售业绩行，跳过")
+            return
+
+        # ---- 2. 定义辅助函数：读取 cell_data 中的数值 ----
+        def _get_val(row_i, col_key):
+            v = cell_data.get((row_i, col_key))
+            if v is None:
+                return 0.0
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return 0.0
+
+        # ---- 3. 核心逻辑：在指定行索引区间内扫描空白行并填列费用率 ----
+        def _fill_rates_in_range(start_idx, end_idx):
+            """
+            在 [start_idx, end_idx) 区间内扫描：
+            - 遇到 expense_detail 或 manage_detail 类型行 → 记录为当前费用行（current_expense_idx）
+            - 遇到 blank 类型行 → 视为空白行，为其各列填列费用率（百分比字符串）
+            """
+            current_expense_idx = None  # 最近遇到的有内容费用明细行索引
+            filled_count = 0            # 填列的单元格计数
+
+            for row_i in range(start_idx, end_idx):
+                rt = rows[row_i]["row_type"]
+
+                if rt in ("expense_detail", "manage_detail"):
+                    # 费用明细行 → 记录行索引
+                    current_expense_idx = row_i
+                elif rt == "blank" and current_expense_idx is not None:
+                    # 空白行 → 需要填列费用率
+                    for col in columns:
+                        col_key = col["key"]
+                        numerator = _get_val(current_expense_idx, col_key)
+                        denominator = _get_val(sales_idx, col_key)
+
+                        if denominator != 0:
+                            rate_val = numerator / denominator
+                            # 以百分比字符串形式存入 cell_data，保留两位小数
+                            # 例如 0.3527 → "35.27%"
+                            percent_str = f"{rate_val * 100:.2f}%"
+                            cell_data[(row_i, col_key)] = percent_str
+                            filled_count += 1
+                        # 分母为0时留空（不写入 cell_data）
+
+            return filled_count
+
+        # ---- 4. 处理营业费用区间 ----
+        exp_filled = 0
+        if exp_header_idx is not None and mgr_header_idx is not None \
+                and exp_header_idx < mgr_header_idx:
+            exp_filled = _fill_rates_in_range(exp_header_idx + 1, mgr_header_idx)
+            logger.debug(f"    营业费用区间费用率填列: {exp_filled} 个单元格")
+
+        # ---- 5. 处理管理费用区间 ----
+        mgr_filled = 0
+        if mgr_header_idx is not None and fin_header_idx is not None \
+                and mgr_header_idx < fin_header_idx:
+            mgr_filled = _fill_rates_in_range(mgr_header_idx + 1, fin_header_idx)
+            logger.debug(f"    管理费用区间费用率填列: {mgr_filled} 个单元格")
+
+        total_filled = exp_filled + mgr_filled
+        logger.info(f"  {db_name}: 费用率填列完成，共 {total_filled} 个单元格")
 
     # ================================================================
     # HTML 渲染
@@ -1057,13 +1217,31 @@ td.num.negative { color: #c0392b; }
             for col in columns:
                 val = cell_data.get((row_i, col["key"]), None)
                 if val is not None:
-                    formatted = f"{val:,.2f}"
-                    css_class = "num"
-                    if val == 0:
-                        css_class += " zero"
-                    elif val < 0:
-                        css_class += " negative"
-                    cells += f'<td class="{css_class}">{formatted}</td>\n'
+                    # 判断是否为字符串（百分比格式）
+                    # 费用率空白行的数据以百分比字符串形式存储，如 "35.27%"
+                    if isinstance(val, str):
+                        # 百分比字符串 → 直接显示，不加额外格式化
+                        # 设置对应CSS类以便样式化
+                        # 尝试解析出数值判断正负
+                        try:
+                            num_part = float(val.replace("%", ""))
+                            css_class = "num"
+                            if abs(num_part) < 0.001:
+                                css_class += " zero"
+                            elif num_part < 0:
+                                css_class += " negative"
+                        except (ValueError, TypeError):
+                            css_class = "num"
+                        cells += f'<td class="{css_class}">{self._escape_html(val)}</td>\n'
+                    else:
+                        # 数值类型 → 按金额格式显示（千分位两位小数）
+                        formatted = f"{val:,.2f}"
+                        css_class = "num"
+                        if val == 0:
+                            css_class += " zero"
+                        elif val < 0:
+                            css_class += " negative"
+                        cells += f'<td class="{css_class}">{formatted}</td>\n'
                 else:
                     cells += "<td></td>\n"
 

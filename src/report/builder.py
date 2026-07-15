@@ -406,6 +406,22 @@ class ReportBuilder:
             except Exception as e:
                 logger.warning(f"  {sheet_name} 业绩完成率公式修复失败: {e}")
 
+        # ---- 步骤5.14：为每个账套填列营业费用与管理费用明细项对应的费用率（V3.1 新增） ----
+        # 费用率计算规则：
+        #   在营业费用与管理费用区域中，每个费用明细行下方都有一个空白行（A列为空）。
+        #   这些空白行的各月份列及年度合计列，需要填入"该费用明细 ÷ 销售业绩"的比率，
+        #   以百分比格式显示（如 "35.27%"）。
+        # 执行前提：所有行/列调整、数据填充、汇总计算均已完成。
+        for acc in accounts:
+            sheet_name = acc.sheet_name[:31]
+            if sheet_name not in self._wb.sheetnames:
+                continue
+            ws = self._wb[sheet_name]
+            try:
+                self._fill_expense_rate_rows(ws)
+            except Exception as e:
+                logger.warning(f"  {sheet_name} 费用率行填列失败: {e}")
+
         # ---- 步骤6：调整所有表页的合计列宽度（增加50%） ----
         for sheet_name in self._wb.sheetnames:
             ws = self._wb[sheet_name]
@@ -1211,13 +1227,15 @@ class ReportBuilder:
         :param ws: 目标工作表
         """
         # ---- 1. 扫描 A 列，定位关键行 ----
-        sales_row = None       # "销售业绩"行号
-        cost_row = None        # "主营业务成本"行号
-        expense_row = None     # "营业费用"行号
-        manage_row = None      # "管理费用"行号
-        finance_row = None     # "财务费用"行号
-        profit_row = None      # "利润"行号
-        profit_rate_row = None # "利润率"行号
+        sales_row = None          # "销售业绩"行号
+        cost_row = None           # "主营业务成本"行号
+        expense_row = None        # "营业费用"行号
+        manage_row = None         # "管理费用"行号
+        finance_row = None        # "财务费用"行号
+        expense_total_row = None  # "费用支出"行号（V3.2 新增）
+        expense_rate_row = None   # "费用率"行号（V3.2 新增）
+        profit_row = None         # "利润"行号
+        profit_rate_row = None    # "利润率"行号
 
         for row_idx in range(1, ws.max_row + 1):
             cell_val = ws.cell(row_idx, 1).value
@@ -1232,6 +1250,10 @@ class ReportBuilder:
                 manage_row = row_idx
             elif cell_str == "财务费用":
                 finance_row = row_idx
+            elif cell_str == "费用支出":
+                expense_total_row = row_idx
+            elif cell_str == "费用率":
+                expense_rate_row = row_idx
             elif cell_str == "利润":
                 profit_row = row_idx
             elif cell_str == "利润率":
@@ -1241,6 +1263,7 @@ class ReportBuilder:
                       f"销售业绩行{sales_row}, 主营业务成本行{cost_row}, "
                       f"营业费用行{expense_row}, 管理费用行{manage_row}, "
                       f"财务费用行{finance_row}, "
+                      f"费用支出行{expense_total_row}, 费用率行{expense_rate_row}, "
                       f"利润行{profit_row}, 利润率行{profit_rate_row}")
 
         # ---- 2. 查找月份列和合计列 ----
@@ -1280,6 +1303,26 @@ class ReportBuilder:
             except (ValueError, TypeError):
                 return 0.0
 
+        # ======== 备份关键汇总行的原始值（V3.2 新增） ========
+        # 步骤 3/4 会覆盖 expense_row/manage_row/sales_row 的月份列值（当合计为0时），
+        # 导致步骤 5 费用支出计算和费用率计算的兜底失效。
+        # 因此在此处预先备份原始值，供后续兜底使用。
+        expense_raw = {}   # {列号: 原始值} 营业费用行原始值
+        manage_raw = {}    # {列号: 原始值} 管理费用行原始值
+        sales_raw = {}     # {列号: 原始值} 销售业绩行原始值（费用率计算需要）
+        all_col_list = list(month_cols)
+        if total_col is not None:
+            all_col_list.append(total_col)
+        if expense_row is not None:
+            for col_idx in all_col_list:
+                expense_raw[col_idx] = _get_cell_float(expense_row, col_idx)
+        if manage_row is not None:
+            for col_idx in all_col_list:
+                manage_raw[col_idx] = _get_cell_float(manage_row, col_idx)
+        if sales_row is not None:
+            for col_idx in all_col_list:
+                sales_raw[col_idx] = _get_cell_float(sales_row, col_idx)
+
         # ======== 3. 计算各汇总行（仅月份列） ========
         # 逐列处理，而不是逐行处理，避免重复行列扫描
 
@@ -1295,6 +1338,18 @@ class ReportBuilder:
                     except (ValueError, TypeError):
                         pass
                 _write_summary_cell(sales_row, col_idx, total)
+
+        # 步骤 3a 可能将销售业绩行的月份列覆盖为0（明细区域无数据时），
+        # 此时需要恢复销售业绩行的原始值（来自 _fill_period_transfer_data 写入的真实数据），
+        # 因为费用率计算需要引用销售业绩行的值作分母。
+        if sales_row is not None:
+            for col_idx in month_cols:
+                current_val = _get_cell_float(sales_row, col_idx)
+                orig_val = sales_raw.get(col_idx, 0.0)
+                if current_val == 0.0 and orig_val != 0.0:
+                    _write_summary_cell(sales_row, col_idx, orig_val)
+                    logger.debug(f"  _calculate_summary_sums: 恢复销售业绩行({sales_row})"
+                                 f"列{col_idx}原始值 {orig_val}")
 
         # --- 3b. 营业费用：仅统计有背景色的明细行 ---
         if expense_row is not None and manage_row is not None and expense_row < manage_row:
@@ -1356,12 +1411,94 @@ class ReportBuilder:
                 if has_month_data:
                     _write_summary_cell(row_idx, total_col, row_total)
 
-        # ======== 5. 计算利润和利润率（按列公式计算） ========
+        # ======== 5. 计算费用支出和费用率（V3.2 新增） ========
+        # 费用支出 = 营业费用 + 管理费用 + 财务费用
+        # 费用率 = 费用支出 / 销售业绩（百分比）
+        # 对每个月份列和合计列分别计算
+        #
+        # 重要：不能从 expense_row / manage_row / finance_row 读取单元格值，
+        # 因为这些行已经被步骤3/4写入了区间内明细行的合计值（明细区域的空白
+        # 行不含数据，导致月份列合计为0）。
+        # 正确的做法是从原始单元格直接读取（源自 _fill_period_transfer_data
+        # 写入的数据），即在没有被覆盖之前的值。
+        # 所以改为直接从原始数据区域汇总明细行数值。
+
+        # --- 5a. 费用支出：各月份列 + 合计列 ---
+        if expense_total_row is not None:
+            all_cols = list(month_cols)
+            if total_col is not None:
+                all_cols.append(total_col)
+            for col_idx in all_cols:
+                # 汇总营业费用明细区域（expense_row+1 ~ manage_row-1）
+                # 仅统计有背景色（即非空白）的明细行
+                exp_sum = 0.0
+                if expense_row is not None and manage_row is not None and expense_row < manage_row:
+                    for row_idx in range(expense_row + 1, manage_row):
+                        cell_a = ws.cell(row_idx, 1)
+                        has_fill = (cell_a.fill and cell_a.fill.fill_type is not None
+                                    and cell_a.fill.fill_type != "")
+                        if not has_fill:
+                            continue
+                        cell_val = ws.cell(row_idx, col_idx).value
+                        try:
+                            exp_sum += float(cell_val) if cell_val else 0
+                        except (ValueError, TypeError):
+                            pass
+                # 兜底：如果明细聚合为0但营业费用汇总行本身有值，使用备份的原始值
+                # 因为步骤 3/4 可能已将 expense_row 单元格覆盖为0
+                if exp_sum == 0.0 and expense_row is not None:
+                    exp_sum = expense_raw.get(col_idx, 0.0)
+
+                # 汇总管理费用明细区域（manage_row+1 ~ finance_row-1）
+                mgr_sum = 0.0
+                if manage_row is not None and finance_row is not None and manage_row < finance_row:
+                    for row_idx in range(manage_row + 1, finance_row):
+                        cell_a = ws.cell(row_idx, 1)
+                        has_fill = (cell_a.fill and cell_a.fill.fill_type is not None
+                                    and cell_a.fill.fill_type != "")
+                        if not has_fill:
+                            continue
+                        cell_val = ws.cell(row_idx, col_idx).value
+                        try:
+                            mgr_sum += float(cell_val) if cell_val else 0
+                        except (ValueError, TypeError):
+                            pass
+                # 兜底：如果明细聚合为0但管理费用汇总行本身有值，使用备份的原始值
+                # 因为步骤 3/4 可能已将 manage_row 单元格覆盖为0
+                if mgr_sum == 0.0 and manage_row is not None:
+                    mgr_sum = manage_raw.get(col_idx, 0.0)
+
+                # 财务费用自身值（不在明细区域中，直接取 finance_row 的单元格值）
+                fin_sum = _get_cell_float(finance_row, col_idx) if finance_row else 0
+                # 兜底：如果财务费用行已被步骤4覆盖为0，尝试从 finance_row 原始值读取
+                # （fin_sum 已从 _get_cell_float 获取，若步骤3/4覆盖为0则取到0）
+
+                total_expense = exp_sum + mgr_sum + fin_sum
+                _write_summary_cell(expense_total_row, col_idx, total_expense)
+
+        # --- 5b. 费用率：各月份列 + 合计列 ---
+        # 费用率 = 费用支出 / 销售业绩，结果以百分比格式显示（如 35.27%）
+        if expense_rate_row is not None:
+            all_cols = list(month_cols)
+            if total_col is not None:
+                all_cols.append(total_col)
+            for col_idx in all_cols:
+                te_val = _get_cell_float(expense_total_row, col_idx) if expense_total_row else 0
+                sv_val = _get_cell_float(sales_row, col_idx) if sales_row else 0
+                rate_val = (te_val / sv_val * 100) if sv_val != 0 else 0
+                cell = ws.cell(expense_rate_row, col_idx)
+                cell.value = rate_val
+                cell.number_format = '0.00"%"'
+                cell.font = self.DATA_FONT
+                cell.alignment = Alignment(horizontal="right")
+                cell.border = self.THIN_BORDER
+
+        # ======== 6. 计算利润和利润率（按列公式计算） ========
         # 利润 = 销售业绩 - 主营业务成本 - 营业费用 - 管理费用 - 财务费用
         # 利润率 = 利润 / 销售业绩（百分比）
         # 对每个月份列和合计列分别计算
 
-        # --- 5a. 计算各月份列的利润值 ---
+        # --- 6a. 计算各月份列的利润值 ---
         if profit_row is not None:
             all_cols = list(month_cols)
             if total_col is not None:
@@ -1375,7 +1512,7 @@ class ReportBuilder:
                 profit_val = sales_val - cost_val - expense_val - manage_val - finance_val
                 _write_summary_cell(profit_row, col_idx, profit_val)
 
-        # --- 5b. 计算各月份列的利润率 ---
+        # --- 6b. 计算各月份列的利润率 ---
         if profit_rate_row is not None:
             all_cols = list(month_cols)
             if total_col is not None:
@@ -1907,6 +2044,190 @@ class ReportBuilder:
             formula_count += 1
 
         logger.info(f"  _fix_performance_formula: 已写入 {formula_count} 个公式单元格")
+
+    # ================================================================
+    # _fill_expense_rate_rows — 为营业费用/管理费用明细空白行填列费用率（V3.1 新增）
+    # ================================================================
+    # 功能说明：
+    #   在每个营业费用/管理费用费用明细行的下方，都有一个空白行（A列无内容）。
+    #   本方法为这些空白行的各月份列及年度合计列，计算并填列费用率：
+    #
+    #     费用率（某月某空白行某列）=
+    #       该空白行上方最近费用明细行（同一列的值） ÷ 销售业绩行（同一列的值）
+    #
+    #   结果以百分比数字格式写入单元格，例如 0.3527 显示为 "35.27%"。
+    #
+    # 设计要点：
+    #   1. 扫描A列定位：销售业绩行、营业费用行、管理费用行、财务费用行
+    #   2. 通过表头（第1行或第2行）识别月份列和年度合计列
+    #   3. 对营业费用区间（营业费用行+1 ~ 管理费用行-1）：
+    #      - 逐行扫描，遇到A列有内容（费用明细行）时记录为当前费用行号
+    #      - 遇到A列为空（空白行）时，对每个月份列和合计列填列费用率
+    #   4. 对管理费用区间（管理费用行+1 ~ 财务费用行-1）重复以上逻辑
+    #   5. 分母为0时留空（不写入任何值），避免除零错误
+    #
+    # 调用时机：在 _fix_performance_formula 之后、_widen_total_column 之前调用，
+    #           确保所有数据行和汇总行的数值已就位。
+    # ================================================================
+
+    def _fill_expense_rate_rows(self, ws):
+        """
+        为营业费用和管理费用明细空白行填列费用率（百分比格式）。
+
+        费用率 = 费用明细金额 ÷ 销售业绩金额，
+        结果以百分比格式写入空白行的对应列单元格。
+
+        :param ws: 目标工作表（openpyxl Worksheet 对象）
+        """
+        # ---- 1. 扫描A列，定位关键行 ----
+        sales_row = None         # "销售业绩"行号
+        expense_row = None       # "营业费用"（标题行）行号
+        manage_row = None        # "管理费用"（标题行）行号
+        finance_row = None       # "财务费用"（标题行）行号
+
+        for row_idx in range(1, ws.max_row + 1):
+            cell_val = ws.cell(row_idx, 1).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str == "销售业绩":
+                sales_row = row_idx
+            elif cell_str == "营业费用":
+                expense_row = row_idx
+            elif cell_str == "管理费用":
+                manage_row = row_idx
+            elif cell_str == "财务费用":
+                finance_row = row_idx
+
+        # ---- 验证关键行是否全部找到 ----
+        if sales_row is None:
+            logger.warning("  _fill_expense_rate_rows: 未找到'销售业绩'行，跳过")
+            return
+        if expense_row is None or manage_row is None:
+            logger.warning("  _fill_expense_rate_rows: 未找到'营业费用'或'管理费用'行，跳过")
+            return
+        if finance_row is None:
+            logger.warning("  _fill_expense_rate_rows: 未找到'财务费用'行，跳过")
+            return
+
+        logger.debug(f"  _fill_expense_rate_rows 定位: "
+                     f"销售业绩行{sales_row}, 营业费用行{expense_row}, "
+                     f"管理费用行{manage_row}, 财务费用行{finance_row}")
+
+        # ---- 2. 扫描表头（第1行或第2行），识别月份列和年度合计列 ----
+        MONTH_MAP = {
+            "1月": 1, "2月": 2, "3月": 3, "4月": 4,
+            "5月": 5, "6月": 6, "7月": 7, "8月": 8,
+            "9月": 9, "10月": 10, "11月": 11, "12月": 12,
+        }
+        month_cols = []   # 月份列的Excel列号列表（升序）
+        total_col = None  # "年度合计"列的Excel列号
+
+        for col_idx in range(1, ws.max_column + 1):
+            cell_val = ws.cell(1, col_idx).value
+            if cell_val is None:
+                cell_val = ws.cell(2, col_idx).value
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str in MONTH_MAP:
+                month_cols.append(col_idx)
+            elif "合计" in cell_str or "汇总" in cell_str:
+                total_col = col_idx
+
+        if not month_cols:
+            logger.warning("  _fill_expense_rate_rows: 未找到月份列，跳过")
+            return
+        logger.debug(f"  _fill_expense_rate_rows: 月份列={month_cols}, 合计列={total_col}")
+
+        # ---- 3. 辅助函数：安全读取单元格数值（支持公式计算后的缓存值） ----
+        def _get_cell_float(ws_obj, row_num, col_num):
+            """
+            安全读取指定单元格的数值。
+            处理以下情况：
+              - 单元格为空 → 返回 0.0
+              - 单元格为字符串（公式）→ 尝试转为float，失败则返回0.0
+              - 单元格为数字 → 直接返回float
+              - 单元格为None → 返回0.0
+            """
+            cell = ws_obj.cell(row_num, col_num)
+            val = cell.value
+            if val is None:
+                return 0.0
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                # 如果是公式字符串且没有缓存值，返回0.0
+                return 0.0
+
+        # ---- 4. 核心逻辑：为指定区间内的空白行填列费用率 ----
+        def _fill_rates_in_range(start_row, end_row):
+            """
+            在 [start_row, end_row) 区间内扫描：
+            - 遇到A列有内容的行 → 记录为当前费用明细行（current_expense_row）
+            - 遇到A列为空的行 → 视为空白行，为其各列填列费用率
+            """
+            current_expense_row = None  # 最近遇到的有内容的费用明细行号
+            filled_count = 0            # 已填列的单元格计数
+
+            for row_idx in range(start_row, end_row):
+                cell_a = ws.cell(row_idx, 1)
+                a_val = cell_a.value
+                a_str = str(a_val).strip() if a_val else ""
+
+                if a_str:
+                    # A列有内容 → 这是费用明细行，记录行号
+                    current_expense_row = row_idx
+                else:
+                    # A列为空 → 这是空白行，需要填列费用率
+                    if current_expense_row is None:
+                        # 区间起始处可能有空白行但尚未遇到费用行，跳过
+                        continue
+
+                    # ---- 对每个月份列填列费用率 ----
+                    for col_idx in month_cols:
+                        # 分子 = 费用明细行该列的值
+                        numerator = _get_cell_float(ws, current_expense_row, col_idx)
+                        # 分母 = 销售业绩行该列的值
+                        denominator = _get_cell_float(ws, sales_row, col_idx)
+
+                        if denominator != 0:
+                            rate = numerator / denominator
+                            cell = ws.cell(row_idx, col_idx)
+                            cell.value = rate
+                            # 百分比格式：例如 0.3527 显示为 35.27%
+                            cell.number_format = '0.00%'
+                            cell.font = self.DATA_FONT
+                            cell.alignment = Alignment(horizontal="right")
+                            cell.border = self.THIN_BORDER
+                            filled_count += 1
+                        # 分母为0时，该单元格留空（不写入值）
+
+                    # ---- 对年度合计列填列费用率 ----
+                    if total_col is not None:
+                        numerator = _get_cell_float(ws, current_expense_row, total_col)
+                        denominator = _get_cell_float(ws, sales_row, total_col)
+                        if denominator != 0:
+                            rate = numerator / denominator
+                            cell = ws.cell(row_idx, total_col)
+                            cell.value = rate
+                            cell.number_format = '0.00%'
+                            cell.font = self.DATA_FONT
+                            cell.alignment = Alignment(horizontal="right")
+                            cell.border = self.THIN_BORDER
+                            filled_count += 1
+
+            return filled_count
+
+        # ---- 5. 处理营业费用区间的空白行 ----
+        # 区间：[expense_row+1, manage_row)，即"营业费用"与"管理费用"之间
+        expense_filled = _fill_rates_in_range(expense_row + 1, manage_row)
+        logger.debug(f"    营业费用区间费用率填列: {expense_filled} 个单元格")
+
+        # ---- 6. 处理管理费用区间的空白行 ----
+        # 区间：[manage_row+1, finance_row)，即"管理费用"与"财务费用"之间
+        manage_filled = _fill_rates_in_range(manage_row + 1, finance_row)
+        logger.debug(f"    管理费用区间费用率填列: {manage_filled} 个单元格")
+
+        total_filled = expense_filled + manage_filled
+        logger.info(f"  _fill_expense_rate_rows: 费用率填列完成，"
+                    f"共 {total_filled} 个单元格")
 
     # ================================================================
     # _fill_bank_balance — 从 GL_AccSum 总账表填列银行余额数据（V3.0 新增）

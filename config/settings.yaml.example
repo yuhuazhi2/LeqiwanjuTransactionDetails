@@ -1,0 +1,48 @@
+# ============================================================
+# 分店财务报表生成工具 - 全局配置文件（示例模板）
+# ============================================================
+# 请将此文件复制为 settings.yaml，并填入实际配置信息。
+# settings.yaml 已被 .gitignore 忽略，不会提交到 Git。
+# ============================================================
+
+# ---- 数据库连接配置 (SQL Server 2008R2) ----
+database:
+  server: "192.168.1.100"       # SQL Server 主机地址
+  port: 1433                    # 端口号（默认1433）
+  ufsystem_db: "UFSystem"       # 公共数据库名称（存放所有账套信息）
+  account_db_prefix: "UFDATA_"  # 账套数据库前缀（如 UFDATA_001_2024）
+  username: "sa"                # 数据库登录名
+  password: "your_password"     # 【请修改】数据库密码
+  timeout: 30                   # 连接超时（秒）
+  charset: "GBK"                # 用友数据库字符集（通常为GBK，不可修改）
+
+# ---- 模板文件配置 ----
+template:
+  filepath: "分店财务报表模板.xlsx"         # 模板文件路径（相对项目根目录）
+  source_sheet: "sheet"                   # 参考页签名（模板中已有的页签）
+  year_row: 1                             # 年份/店名所在行（1-indexed）
+  header_row: 2                           # 月份表头所在行
+  data_start_row: 3                       # 数据起始行
+
+# ---- 输出配置 ----
+output:
+  format: "xlsx"                          # 输出格式：xlsx / html / both
+  dir: "output"                           # 输出目录
+  filename_prefix: "分店财务报表_"          # 输出文件名前缀
+  file_extension: ".xlsx"                 # 输出格式（.xlsx / .xls）
+  open_when_done: true                    # 生成后是否自动打开文件
+
+# ---- 账套筛选条件 ----
+account_filter:
+  include_ids: []                         # 指定账套号列表，留空取全部
+  exclude_ids: []                         # 排除指定账套号
+
+# ---- 取数年份 ----
+report_year: 2024                         # 报表年份
+report_months: []                         # 月份范围：1~12，留空取全年
+
+# ---- 日志配置 ----
+logging:
+  level: "INFO"                           # DEBUG / INFO / WARNING / ERROR
+  file: "logs/app.log"                    # 日志文件路径（留空则不写文件）
+  console: true                           # 是否输出到控制台

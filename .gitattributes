@@ -1,0 +1,27 @@
+# 统一行尾结束符为 LF（跨平台兼容）
+* text=auto eol=lf
+
+# Python 文本文件
+*.py text diff=python
+*.yaml text
+*.yml text
+*.md text
+*.bat text eol=crlf
+*.cfg text
+*.ini text
+*.txt text
+
+# Excel 二进制文件（不作为文本比较）
+*.xlsx binary
+*.xls binary
+
+# 图片文件
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# Git 生成文件（只在本地使用）
+*.patch binary
+*.orig binary
