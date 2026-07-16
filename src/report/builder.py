@@ -2079,15 +2079,15 @@ class ReportBuilder:
                 continue
 
             col_letter = get_column_letter(col_idx)
-            # 公式：=IF(F5=0,"",F4/F5) 对应模板原始逻辑
+            # 公式：=IF(F4=0,"",F5/F4) 对应需求：完成率 = 销售业绩 / 目标预算
             # 其中F列替换为当前列，4替换为目标预算行号，5替换为销售业绩行号
-            formula = (f'=IF({col_letter}{sales_row}=0,"",'
-                       f'{col_letter}{target_row}/{col_letter}{sales_row})')
+            formula = (f'=IF({col_letter}{target_row}=0,"",'
+                       f'{col_letter}{sales_row}/{col_letter}{target_row})')
 
             cell = ws.cell(rate_row, col_idx)
             cell.value = formula
-            # 设置数字格式为金额格式（因为结果是比率，用百分比格式更合适，但保留原模板风格）
-            cell.number_format = self.CURRENCY_FORMAT
+            # 设置数字格式为百分比格式（显示如 85.23%）
+            cell.number_format = '0.00%'
             cell.font = self.DATA_FONT
             cell.alignment = Alignment(horizontal="right")
             cell.border = self.THIN_BORDER

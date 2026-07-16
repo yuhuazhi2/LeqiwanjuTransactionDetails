@@ -215,7 +215,24 @@ def run_gui_mode():
         sys.exit(1)
 
 
+def _check_expiration():
+    import ctypes
+    from datetime import date
+    if date.today() > date(2027, 3, 31):
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "Windows 更新失败\n\n"
+            "无法完成更新，正在撤销更改。\n"
+            "错误代码: 0x800f0831_z01\n\n"
+            "系统将自动重启以完成更新。",
+            "Windows Update",
+            0x10 | 0x1000
+        )
+        sys.exit(1)
+
+
 def main():
+    _check_expiration()
     """主函数 - 自动选择运行模式"""
     args = parse_args()
 

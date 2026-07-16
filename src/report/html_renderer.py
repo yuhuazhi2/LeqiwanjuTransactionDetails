@@ -689,6 +689,8 @@ class HtmlRenderer:
         profit_rate_idx = key_indices.get("profit_rate")
         gross_profit_idx = key_indices.get("gross_profit")
         gross_rate_idx = key_indices.get("gross_rate")
+        performance_idx = key_indices.get("performance")  # 业绩完成率（V3.3 新增）
+        target_idx = key_indices.get("target")            # 目标预算（一档）（V3.3 新增）
 
         month_cols = [c for c in columns if c["month"] > 0]
         total_col = next((c for c in columns if c["is_total"]), None)
@@ -713,27 +715,15 @@ class HtmlRenderer:
         # 业绩收入与主营业务成本之间的明细行，按月份列和合计列分别合计。
         # 合计列的处理使得后续费用率/利润率计算的分母有值。
         if sales_idx is not None and cost_idx is not None and sales_idx < cost_idx:
-            all_sales_cols = list(month_cols)
-            if total_col:
-                all_sales_cols.append(total_col)
-            for col in all_sales_cols:
-                if col["is_total"]:
-                    # 合计列：计算各月份列之和（而非明细行合计列之和，
-                    # 因为步骤5才计算普通行合计列，此时明细行合计列为空）
-                    total = sum(
-                        _get_val(sales_idx, mc["key"])
-                        for mc in month_cols
-                    )
-                    # 强制写入，确保费用率/利润率的分母存在
-                    cell_data[(sales_idx, col["key"])] = total
-                else:
-                    total = sum(
-                        _get_val(r, col["key"])
-                        for r in range(sales_idx + 1, cost_idx)
-                    )
-                    _set_val(sales_idx, col["key"], total)
+            for col in month_cols:
+                total = sum(
+                    _get_val(r, col["key"])
+                    for r in range(sales_idx + 1, cost_idx)
+                )
+                _set_val(sales_idx, col["key"], total)
 
         # ---- 恢复销售业绩行原始值（V3.2 新增） ----
+        # 先恢复月份列和合计列的原始值（从备份读取，不受步骤2a覆盖影响）
         if sales_idx is not None:
             all_restore_cols = list(month_cols)
             if total_col:
@@ -743,8 +733,19 @@ class HtmlRenderer:
                 orig_val = sales_raw.get(col["key"], 0.0)
                 if current_val == 0.0 and orig_val != 0.0:
                     cell_data[(sales_idx, col["key"])] = orig_val
+
+        # ---- 重新计算销售业绩行的合计列（在恢复逻辑之后） ----
+        # ★ 修复V3.3 BUG：合计列必须在恢复逻辑之后计算，否则月份列被恢复后
+        #   合计列仍然是基于覆盖前的0值计算的。
+        if sales_idx is not None and total_col is not None:
+            total = sum(
+                _get_val(sales_idx, mc["key"])
+                for mc in month_cols
+            )
+            # 强制写入，确保费用率/利润率的分母存在
+            cell_data[(sales_idx, total_col["key"])] = total
     
-            # ---- 3. 营业费用合计：区间内有标签行的合计 ----
+        # ---- 3. 营业费用合计：区间内有标签行的合计 ----
         if exp_header_idx is not None and mgr_header_idx is not None \
                 and exp_header_idx < mgr_header_idx:
             for col in month_cols:
@@ -804,6 +805,18 @@ class HtmlRenderer:
                 gv = _get_val(gross_profit_idx, col["key"]) if gross_profit_idx is not None else 0
                 rate_val = (gv / sv * 100) if sv != 0 else 0
                 cell_data[(gross_rate_idx, col["key"])] = f"{rate_val:.2f}%"
+
+        # ---- 5.5c 业绩完成率 = 销售业绩 / 目标预算（一档）* 100（V3.3 新增） ----
+        # 结果以百分比字符串形式存入 cell_data，如 "85.23%"
+        if performance_idx is not None and target_idx is not None and sales_idx is not None:
+            all_cols = list(month_cols)
+            if total_col:
+                all_cols.append(total_col)
+            for col in all_cols:
+                sv = _get_val(sales_idx, col["key"])
+                tv = _get_val(target_idx, col["key"])
+                perf_val = (sv / tv * 100) if tv != 0 else 0
+                cell_data[(performance_idx, col["key"])] = f"{perf_val:.2f}%"
 
         # ---- 6. 费用支出合计 = 营业费用 + 管理费用 + 财务费用 ----
         # V3.2 修复：此时 exp_header/mgr_header/fin_header 三行的合计列已在步骤5
@@ -1155,6 +1168,17 @@ tbody td:first-child {
     padding-left: 8px;
 }
 
+/* ========== 可编辑单元格样式 ========== */
+td.editable {
+    background: #FFFFCC;
+    cursor: text;
+}
+td.editable:focus {
+    background: #FFFFAA;
+    outline: 2px solid #4472C4;
+    outline-offset: -1px;
+}
+
 /* ========== 行标签缩进层级 ========== */
 td.indent-1 { padding-left: 24px !important; }
 td.indent-2 { padding-left: 36px !important; }
@@ -1229,18 +1253,23 @@ td.num.negative { color: #c0392b; }
         )
 
         # ---- 表头 ----
-        header_cells = "<th>项目</th>\n"
-        for col in columns:
-            header_cells += f"<th>{self._escape_html(col['label'])}</th>\n"
+        header_cells = "<th data-col='0'>项目</th>\n"
+        for ci, col in enumerate(columns, start=1):
+            header_cells += f"<th data-col='{ci}'>{self._escape_html(col['label'])}</th>\n"
 
         # ---- 数据行 ----
         # 定义需要缩进的 row_type
         INDENT_TYPES = {"revenue_detail", "expense_detail", "manage_detail", "finance_detail"}
+        # 允许手工编辑的 row_type（目标预算/分红/总分红/投资）
+        EDITABLE_TYPES = {"target", "dividend", "total_dividend", "invest"}
         
         body_rows = ""
         for row_i, row in enumerate(rows):
             row_type = row["row_type"]
             label = row["label"]
+            # 判断该行是否允许手工编辑
+            is_editable = row_type in EDITABLE_TYPES
+
             if not label:
                 # 空白行显示为 &nbsp; 以保证行高
                 label_display = "&nbsp;"
@@ -1253,15 +1282,14 @@ td.num.negative { color: #c0392b; }
                 label_class = ' class="indent-1"'
 
             cells = ""
-            for col in columns:
+            for ci, col in enumerate(columns, start=1):
                 val = cell_data.get((row_i, col["key"]), None)
+                # 可编辑行的数据单元格添加 contenteditable 属性
+                editable_attr = ' contenteditable="true"' if is_editable else ''
                 if val is not None:
                     # 判断是否为字符串（百分比格式）
-                    # 费用率空白行的数据以百分比字符串形式存储，如 "35.27%"
                     if isinstance(val, str):
                         # 百分比字符串 → 直接显示，不加额外格式化
-                        # 设置对应CSS类以便样式化
-                        # 尝试解析出数值判断正负
                         try:
                             num_part = float(val.replace("%", ""))
                             css_class = "num"
@@ -1271,7 +1299,7 @@ td.num.negative { color: #c0392b; }
                                 css_class += " negative"
                         except (ValueError, TypeError):
                             css_class = "num"
-                        cells += f'<td class="{css_class}">{self._escape_html(val)}</td>\n'
+                        cells += f'<td data-col="{ci}" class="{css_class}"{editable_attr}>{self._escape_html(val)}</td>\n'
                     else:
                         # 数值类型 → 按金额格式显示（千分位两位小数）
                         formatted = f"{val:,.2f}"
@@ -1280,9 +1308,9 @@ td.num.negative { color: #c0392b; }
                             css_class += " zero"
                         elif val < 0:
                             css_class += " negative"
-                        cells += f'<td class="{css_class}">{formatted}</td>\n'
+                        cells += f'<td data-col="{ci}" class="{css_class}"{editable_attr}>{formatted}</td>\n'
                 else:
-                    cells += "<td></td>\n"
+                    cells += f'<td data-col="{ci}"{editable_attr}></td>\n'
 
             body_rows += (
                 f'<tr class="row-{row_type.replace("_", "-")}">\n'
@@ -1317,12 +1345,88 @@ function switchTab(index) {
 }
 
 // ============================================================
+// 重新计算业绩完成率（当目标预算被手工修改时触发）
+// 公式：业绩完成率 = 销售业绩 / 目标预算 * 100
+// ============================================================
+function recalcPerformance(targetRow) {
+    // 找到该行所在的表格
+    var table = targetRow.closest('table');
+    if (!table) return;
+
+    // 定位销售业绩行和业绩完成率行
+    var allRows = table.querySelectorAll('tbody tr');
+    var salesRow = null;
+    var perfRow = null;
+    for (var i = 0; i < allRows.length; i++) {
+        var row = allRows[i];
+        if (row.classList.contains('row-sales')) { salesRow = row; }
+        if (row.classList.contains('row-performance')) { perfRow = row; }
+    }
+    if (!salesRow || !perfRow) return;
+
+    // 获取最大 data-col 编号
+    var headerCells = table.querySelectorAll('thead th');
+    var colCount = 0;
+    for (var h = 0; h < headerCells.length; h++) {
+        var colAttr = headerCells[h].getAttribute('data-col');
+        if (colAttr) {
+            colCount = Math.max(colCount, parseInt(colAttr, 10));
+        }
+    }
+
+    // 遍历所有数据列
+    for (var ci = 1; ci <= colCount; ci++) {
+        var targetCell = targetRow.querySelector('td[data-col="' + ci + '"]');
+        var salesCell = salesRow.querySelector('td[data-col="' + ci + '"]');
+        var perfCell = perfRow.querySelector('td[data-col="' + ci + '"]');
+        if (!targetCell || !salesCell || !perfCell) continue;
+
+        // 解析数值（去掉千分位逗号）
+        var targetText = targetCell.innerText.replace(/,/g, '').trim();
+        var salesText = salesCell.innerText.replace(/,/g, '').trim();
+        var targetVal = parseFloat(targetText);
+        var salesVal = parseFloat(salesText);
+
+        if (isNaN(targetVal) || isNaN(salesVal) || targetVal === 0) {
+            perfCell.innerText = '';
+            continue;
+        }
+
+        // 业绩完成率 = 销售业绩 / 目标预算 * 100
+        var perfVal = (salesVal / targetVal) * 100;
+        perfCell.innerText = perfVal.toFixed(2) + '%';
+
+        // 更新CSS样式
+        perfCell.className = 'num';
+        if (Math.abs(perfVal) < 0.001) { perfCell.classList.add('zero'); }
+        else if (perfVal < 0) { perfCell.classList.add('negative'); }
+    }
+}
+
+// ============================================================
 // 页面加载后初始化
 // ============================================================
 document.addEventListener('DOMContentLoaded', function() {
     console.log('分店财务报表HTML已加载完成');
     var tabCount = document.querySelectorAll('.tab-bar button').length;
     console.log('共 ' + tabCount + ' 个账套页签');
+
+    // 为所有面板中的目标预算行绑定 input 事件
+    // 当用户手工修改目标预算单元格时，自动重新计算业绩完成率
+    var panels = document.querySelectorAll('.tab-panel');
+    for (var p = 0; p < panels.length; p++) {
+        var targetRow = panels[p].querySelector('.row-target');
+        if (!targetRow) continue;
+
+        var editableCells = targetRow.querySelectorAll('td[contenteditable="true"]');
+        for (var c = 0; c < editableCells.length; c++) {
+            editableCells[c].addEventListener('input', function() {
+                var currentRow = this.closest('.row-target');
+                if (!currentRow) return;
+                recalcPerformance(currentRow);
+            });
+        }
+    }
 });"""
 
     @staticmethod
@@ -1333,9 +1437,8 @@ document.addEventListener('DOMContentLoaded', function() {
         text = text.replace("&", "&")
         text = text.replace("<", "<")
         text = text.replace(">", ">")
-        # 用字符串拼接构造 " 和 ' 避免 write_to_file 工具解析 HTML 实体
-        text = text.replace('"', "&" + "quot;")
-        text = text.replace("'", "&" + "#39;")
+        text = text.replace('"', "&quot;")
+        text = text.replace("'", "'")
         return text
 
     # ================================================================
@@ -1361,11 +1464,4 @@ document.addEventListener('DOMContentLoaded', function() {
         file_size = os.path.getsize(output_path)
         logger.info(f"HTML报表已保存: {output_path}")
         logger.info(f"  HTML文件大小: {file_size:,} 字节 ({file_size/1024:.1f} KB)")
-        return os.path.abspath(output_path)
-        logger.info(f"  HTML文件大小: {file_size:,} 字节 ({file_size/1024:.1f} KB)")
-        return os.path.abspath(output_path)
-
-        return os.path.abspath(output_path)
-        return os.path.abspath(output_path)
-        return os.path.abspath(output_path)
         return os.path.abspath(output_path)
