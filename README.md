@@ -12,30 +12,34 @@
 
 ```
 LeqiwanjuTransactionDetails/
-├── config/                        # 配置文件目录
-│   └── settings.yaml              # 全局配置文件（数据库、模板、输出路径）
-├── src/                           # 源代码
-│   ├── database/                  # 数据库模块
-│   │   ├── connector.py           # SQL Server 连接器（pymssql/pyodbc 封装）
-│   │   ├── ufsystem.py            # UFSystem 账套查询（UA_Account）
-│   │   └── t3data.py              # T3 财务数据提取（科目余额、期间损益结转）
-│   ├── template/                  # 模板模块
-│   │   └── parser.py              # 模板解析器（读取 .xlsx 行列结构）
-│   ├── report/                    # 报表生成模块
-│   │   ├── builder.py             # 报表生成器（核心：取数+填充+XLSX输出）
-│   │   └── html_renderer.py       # HTML 报表渲染器（严格复刻 XLSX 样式）
-│   ├── utils/                     # 工具模块
-│   │   └── logger.py              # 日志配置
-│   ├── gui/                       # GUI 桌面应用模块（基础框架）
-│   │   ├── app.py                 # 主窗口（Tkinter）
-│   │   └── config_manager.py      # 配置管理界面
+├── config/                            # 配置文件目录
+│   ├── settings.yaml.example          # 全局配置示例（复制为 settings.yaml 使用）
+│   └── ...                            # 实际配置（.gitignore 已排除）
+├── src/                               # 源代码
+│   ├── database/                      # 数据库模块
+│   │   ├── connector.py               # SQL Server 连接器（pyodbc/pymssql）
+│   │   ├── ufsystem.py                # UFSystem 账套查询（UA_Account）
+│   │   └── t3data.py                  # T3 财务数据提取
+│   ├── template/                      # 模板模块
+│   │   └── parser.py                  # 模板解析器（读取 .xlsx 行列结构）
+│   ├── report/                        # 报表生成模块
+│   │   ├── builder.py                 # 报表生成器（核心：取数+填充+XLSX输出）
+│   │   └── html_renderer.py           # HTML 报表渲染器
+│   ├── utils/                         # 工具模块
+│   │   ├── logger.py                  # 日志配置
+│   │   └── browser_utils.py           # 浏览器打开工具
+│   ├── gui/                           # GUI 桌面应用界面
+│   │   ├── app.py                     # 主窗口（Tkinter）
+│   │   └── config_manager.py          # 配置管理
 │   └── __init__.py
-├── output/                        # 报表输出目录
-├── logs/                          # 日志目录
-├── 分店财务报表模板.xlsx           # Excel 模板文件
-├── main.py                        # 主程序入口
-├── install_deps.bat               # 依赖安装脚本（双击运行）
-└── README.md                      # 本文件
+├── output/                            # 报表输出目录（.gitignore 已排除）
+├── logs/                              # 日志目录（.gitignore 已排除）
+├── 分店财务报表模板.xlsx               # Excel 模板文件
+├── main.py                            # 主程序入口
+├── install_deps.bat                   # 依赖安装脚本（双击运行）
+├── README.md                          # 本文件
+├── .gitignore
+└── .gitattributes
 ```
 
 ---

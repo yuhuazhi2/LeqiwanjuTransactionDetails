@@ -6,7 +6,7 @@ echo  分店财务报表生成工具 - 依赖安装
 echo ============================================
 echo.
 
-:: 检测Python环境
+:: 检测 Python 环境
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [错误] 未检测到 Python，请先安装 Python 3.8+
@@ -41,14 +41,8 @@ echo  正在安装依赖包...
 echo ============================================
 echo.
 
-:: ============================================================
-:: 镜像源配置（优先使用国内镜像加速下载）
-:: 清华大学 TUNA 源和阿里云源二选一
-:: 如需切换源，请修改下面的 URL 即可
-:: ============================================================
+:: 镜像源配置（国内镜像加速）
 set MIRROR_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-:: set MIRROR_URL=https://mirrors.aliyun.com/pypi/simple
-
 set EXTRA_INDEX=https://mirrors.aliyun.com/pypi/simple
 
 echo [配置] 主镜像源: %MIRROR_URL%
@@ -56,32 +50,24 @@ echo [配置] 备用源: %EXTRA_INDEX%
 echo.
 
 :: 升级 pip
-echo [步骤 1/4] 升级 pip...
+echo [步骤 1/3] 升级 pip...
 python -m pip install --upgrade pip -i %MIRROR_URL% --trusted-host pypi.tuna.tsinghua.edu.cn --trusted-host mirrors.aliyun.com
 echo.
 
-:: 安装核心依赖
-echo [步骤 2/4] 安装核心依赖（openpyxl, pymssql, pyyaml）...
-pip install openpyxl pymssql pyyaml ^
-    -i %MIRROR_URL% ^
-    --trusted-host pypi.tuna.tsinghua.edu.cn ^
-    --trusted-host mirrors.aliyun.com
-echo.
-
-:: 安装可选依赖（用于Web报表输出）
-echo [步骤 3/4] 安装可选依赖（用于HTML报表输出）...
-pip install jinja2 markupsafe ^
+:: 安装依赖
+echo [步骤 2/3] 安装依赖（openpyxl, pymssql, pyodbc, pyyaml）...
+pip install openpyxl pymssql pyodbc pyyaml ^
     -i %MIRROR_URL% ^
     --trusted-host pypi.tuna.tsinghua.edu.cn ^
     --trusted-host mirrors.aliyun.com
 echo.
 
 :: 验证安装
-echo [步骤 4/4] 验证依赖安装...
+echo [步骤 3/3] 验证依赖安装...
 python -c "import openpyxl; print('openpyxl', openpyxl.__version__)" 2>nul || echo [警告] openpyxl 安装失败
-python -c "import pymssql; print('pymssql', pymssql.__version__)" 2>nul || echo [警告] pymssql 安装失败（如需连接SQL Server必须安装）
-python -c "import yaml; print('PyYAML', yaml.__version__)" 2>nul || echo [警告] pyyaml 安装失败
-python -c "import jinja2; print('jinja2', jinja2.__version__)" 2>nul || echo [信息] jinja2 未安装（不影响基本功能）
+python -c "import pymssql; print('pymssql', pymssql.__version__)" 2>nul || echo [警告] pymssql 安装失败
+python -c "import pyodbc; print('pyodbc', pyodbc.version)" 2>nul || echo [警告] pyodbc 安装失败
+python -c "import yaml; print('PyYAML', yaml.__version__)" 2>nul || echo [警告] PyYAML 安装失败
 
 echo.
 echo ============================================
@@ -89,7 +75,7 @@ echo  依赖安装完成！
 echo ============================================
 echo.
 echo 使用说明:
-echo   1. 编辑 config/settings.yaml 配置数据库连接
+echo   1. 编辑 config/settings.yaml 配置数据库连接信息
 echo   2. 运行: python main.py
 echo   3. 或在资源管理器中双击 main.py
 echo.
@@ -99,4 +85,4 @@ echo   - 防火墙允许 1433 端口通信
 echo   - sa 账号密码配置正确
 echo.
 
-pause
+pausepause

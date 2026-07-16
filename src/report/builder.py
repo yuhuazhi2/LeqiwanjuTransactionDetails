@@ -1395,8 +1395,12 @@ class ReportBuilder:
                 # 跳过利润和利润率行（合计列将由公式计算覆盖）
                 if row_idx == profit_row or row_idx == profit_rate_row:
                     continue
-                # 检查该行是否有月份数据（任一月份列非空且非零）
-                has_month_data = False
+
+                # 检查该行A列是否有标签（表示这是有意义的汇总/数据行）
+                a_cell_val = ws.cell(row_idx, 1).value
+                has_label = bool(a_cell_val and str(a_cell_val).strip())
+
+                # 计算月份列合计值
                 row_total = 0.0
                 for col_idx in month_cols:
                     cell_val = ws.cell(row_idx, col_idx).value
@@ -1404,12 +1408,21 @@ class ReportBuilder:
                         val = float(cell_val) if cell_val else 0
                     except (ValueError, TypeError):
                         val = 0
-                    if val != 0:
-                        has_month_data = True
                     row_total += val
 
-                if has_month_data:
+                # 对有A列标签的行（如销售业绩、费用汇总行等），始终写入合计列
+                # （即使月份列全为0，也写入0值，确保后续费用率计算的分母不为None）
+                if has_label:
                     _write_summary_cell(row_idx, total_col, row_total)
+                else:
+                    # 对无标签的空白行或格式辅助行，仅当有非零月份数据时才写入合计列
+                    has_month_data = False
+                    for col_idx in month_cols:
+                        if _get_cell_float(row_idx, col_idx) != 0.0:
+                            has_month_data = True
+                            break
+                    if has_month_data:
+                        _write_summary_cell(row_idx, total_col, row_total)
 
         # ======== 5. 计算费用支出和费用率（V3.2 新增） ========
         # 费用支出 = 营业费用 + 管理费用 + 财务费用

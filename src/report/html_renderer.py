@@ -713,11 +713,21 @@ class HtmlRenderer:
             if total_col:
                 all_sales_cols.append(total_col)
             for col in all_sales_cols:
-                total = sum(
-                    _get_val(r, col["key"])
-                    for r in range(sales_idx + 1, cost_idx)
-                )
-                _set_val(sales_idx, col["key"], total)
+                if col["is_total"]:
+                    # 合计列：计算各月份列之和（而非明细行合计列之和，
+                    # 因为步骤5才计算普通行合计列，此时明细行合计列为空）
+                    total = sum(
+                        _get_val(sales_idx, mc["key"])
+                        for mc in month_cols
+                    )
+                    # 强制写入，确保费用率/利润率的分母存在
+                    cell_data[(sales_idx, col["key"])] = total
+                else:
+                    total = sum(
+                        _get_val(r, col["key"])
+                        for r in range(sales_idx + 1, cost_idx)
+                    )
+                    _set_val(sales_idx, col["key"], total)
 
         # ---- 恢复销售业绩行原始值（V3.2 新增） ----
         if sales_idx is not None:

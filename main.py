@@ -71,7 +71,7 @@ def load_config(config_path: str = None) -> dict:
 def parse_args() -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
-        description="分店财务报表生成工具 v2.0",
+        description="分店财务报表生成工具 v3.0",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
