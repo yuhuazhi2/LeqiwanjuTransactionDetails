@@ -1229,6 +1229,8 @@ class ReportBuilder:
         # ---- 1. 扫描 A 列，定位关键行 ----
         sales_row = None          # "销售业绩"行号
         cost_row = None           # "主营业务成本"行号
+        gross_profit_row = None   # "毛利"行号（V3.3 新增）
+        gross_rate_row = None     # "毛利率"行号（V3.3 新增）
         expense_row = None        # "营业费用"行号
         manage_row = None         # "管理费用"行号
         finance_row = None        # "财务费用"行号
@@ -1244,6 +1246,10 @@ class ReportBuilder:
                 sales_row = row_idx
             elif cell_str == "主营业务成本":
                 cost_row = row_idx
+            elif cell_str == "毛利":
+                gross_profit_row = row_idx
+            elif cell_str == "毛利率":
+                gross_rate_row = row_idx
             elif cell_str == "营业费用":
                 expense_row = row_idx
             elif cell_str == "管理费用":
@@ -1261,6 +1267,7 @@ class ReportBuilder:
 
         logger.debug(f"  _calculate_summary_sums 定位: "
                       f"销售业绩行{sales_row}, 主营业务成本行{cost_row}, "
+                      f"毛利行{gross_profit_row}, 毛利率行{gross_rate_row}, "
                       f"营业费用行{expense_row}, 管理费用行{manage_row}, "
                       f"财务费用行{finance_row}, "
                       f"费用支出行{expense_total_row}, 费用率行{expense_rate_row}, "
@@ -1392,8 +1399,9 @@ class ReportBuilder:
         # 计算合计列 = 本行各月份数值之和
         if total_col is not None:
             for row_idx in range(3, ws.max_row + 1):
-                # 跳过利润和利润率行（合计列将由公式计算覆盖）
-                if row_idx == profit_row or row_idx == profit_rate_row:
+                # 跳过毛利、毛利率、利润和利润率行（合计列将由公式计算覆盖）
+                if (row_idx == gross_profit_row or row_idx == gross_rate_row or
+                    row_idx == profit_row or row_idx == profit_rate_row):
                     continue
 
                 # 检查该行A列是否有标签（表示这是有意义的汇总/数据行）
@@ -1424,7 +1432,36 @@ class ReportBuilder:
                     if has_month_data:
                         _write_summary_cell(row_idx, total_col, row_total)
 
-        # ======== 5. 计算费用支出和费用率（V3.2 新增） ========
+        # ======== 5. 毛利 = 销售业绩 - 主营业务成本（V3.3 修复） ========
+        # ★ 注意：此计算必须在步骤4（合计列计算）之后执行，因为销售业绩和
+        #   主营业务成本的合计列值需要步骤4先填充完毕，否则合计列会算出0。
+        if gross_profit_row is not None:
+            all_cols = list(month_cols)
+            if total_col is not None:
+                all_cols.append(total_col)
+            for col_idx in all_cols:
+                sales_val = _get_cell_float(sales_row, col_idx) if sales_row else 0
+                cost_val = _get_cell_float(cost_row, col_idx) if cost_row else 0
+                gross_val = sales_val - cost_val
+                _write_summary_cell(gross_profit_row, col_idx, gross_val)
+
+        # ======== 5.5. 毛利率 = 毛利 / 销售业绩 * 100% ========
+        if gross_rate_row is not None:
+            all_cols = list(month_cols)
+            if total_col is not None:
+                all_cols.append(total_col)
+            for col_idx in all_cols:
+                sales_val = _get_cell_float(sales_row, col_idx) if sales_row else 0
+                gross_val = _get_cell_float(gross_profit_row, col_idx) if gross_profit_row else 0
+                rate_val = (gross_val / sales_val * 100) if sales_val != 0 else 0
+                cell = ws.cell(gross_rate_row, col_idx)
+                cell.value = rate_val
+                cell.number_format = '0.00"%"'
+                cell.font = self.DATA_FONT
+                cell.alignment = Alignment(horizontal="right")
+                cell.border = self.THIN_BORDER
+
+        # ======== 6. 计算费用支出和费用率（V3.2 新增） ========
         # 费用支出 = 营业费用 + 管理费用 + 财务费用
         # 费用率 = 费用支出 / 销售业绩（百分比）
         # 对每个月份列和合计列分别计算
@@ -1506,7 +1543,7 @@ class ReportBuilder:
                 cell.alignment = Alignment(horizontal="right")
                 cell.border = self.THIN_BORDER
 
-        # ======== 6. 计算利润和利润率（按列公式计算） ========
+        # ======== 7. 计算利润和利润率（按列公式计算） ========
         # 利润 = 销售业绩 - 主营业务成本 - 营业费用 - 管理费用 - 财务费用
         # 利润率 = 利润 / 销售业绩（百分比）
         # 对每个月份列和合计列分别计算
@@ -1542,7 +1579,7 @@ class ReportBuilder:
                 cell.alignment = Alignment(horizontal="right")
                 cell.border = self.THIN_BORDER
 
-        logger.info(f"  汇总行合计及利润/利润率计算完成")
+        logger.info(f"  汇总行合计、毛利、毛利率、利润/利润率计算完成")
 
     def build(self) -> str:
         """

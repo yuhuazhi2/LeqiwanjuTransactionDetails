@@ -58,6 +58,8 @@ class HtmlRenderer:
         "目标预算（一档）":     COLOR_TARGET,
         "销售业绩":             COLOR_SALES,
         "主营业务成本":         COLOR_COST,
+        "毛利":                 COLOR_PROFIT,
+        "毛利率":               COLOR_RATE,
         "费用支出":             COLOR_RATE,      # 费用支出 - 浅灰色
         "费用率":               COLOR_RATE,
         "利润":                 COLOR_PROFIT,
@@ -685,6 +687,8 @@ class HtmlRenderer:
         exp_rate_idx = key_indices.get("expense_rate")
         profit_idx = key_indices.get("profit")
         profit_rate_idx = key_indices.get("profit_rate")
+        gross_profit_idx = key_indices.get("gross_profit")
+        gross_rate_idx = key_indices.get("gross_rate")
 
         month_cols = [c for c in columns if c["month"] > 0]
         total_col = next((c for c in columns if c["is_total"]), None)
@@ -739,8 +743,8 @@ class HtmlRenderer:
                 orig_val = sales_raw.get(col["key"], 0.0)
                 if current_val == 0.0 and orig_val != 0.0:
                     cell_data[(sales_idx, col["key"])] = orig_val
-
-        # ---- 3. 营业费用合计：区间内有标签行的合计 ----
+    
+            # ---- 3. 营业费用合计：区间内有标签行的合计 ----
         if exp_header_idx is not None and mgr_header_idx is not None \
                 and exp_header_idx < mgr_header_idx:
             for col in month_cols:
@@ -768,13 +772,38 @@ class HtmlRenderer:
         # 这些合计列值，避免 0+0+0=0 的错误。
         bank_idx = key_indices.get("bank_balance")
         if total_col is not None:
-            skip_rows = {sales_idx, exp_total_idx, exp_rate_idx,
+            skip_rows = {sales_idx, gross_profit_idx, gross_rate_idx,
+                         exp_total_idx, exp_rate_idx,
                          profit_idx, profit_rate_idx, bank_idx}
             for row_i in range(len(rows)):
                 if row_i in skip_rows:
                     continue
                 total = sum(_get_val(row_i, col["key"]) for col in month_cols)
                 _set_val(row_i, total_col["key"], total)
+
+        # ---- 5.5 毛利 = 销售业绩 - 主营业务成本（V3.3 修复） ----
+        # ★ 注意：必须在步骤5（合计列计算）之后执行，因为主营业务成本的合计列
+        #   需要步骤5先填充完毕，否则毛利合计列会算出 sales_total - 0 = sales_total。
+        if gross_profit_idx is not None and sales_idx is not None and cost_idx is not None:
+            all_cols = list(month_cols)
+            if total_col:
+                all_cols.append(total_col)
+            for col in all_cols:
+                sv = _get_val(sales_idx, col["key"])
+                cv = _get_val(cost_idx, col["key"])
+                gp_val = sv - cv
+                _set_val(gross_profit_idx, col["key"], gp_val)
+
+        # ---- 5.5b 毛利率 = 毛利 / 销售业绩 * 100 ----
+        if gross_rate_idx is not None and gross_profit_idx is not None:
+            all_cols = list(month_cols)
+            if total_col:
+                all_cols.append(total_col)
+            for col in all_cols:
+                sv = _get_val(sales_idx, col["key"]) if sales_idx is not None else 0
+                gv = _get_val(gross_profit_idx, col["key"]) if gross_profit_idx is not None else 0
+                rate_val = (gv / sv * 100) if sv != 0 else 0
+                cell_data[(gross_rate_idx, col["key"])] = f"{rate_val:.2f}%"
 
         # ---- 6. 费用支出合计 = 营业费用 + 管理费用 + 财务费用 ----
         # V3.2 修复：此时 exp_header/mgr_header/fin_header 三行的合计列已在步骤5
@@ -1332,4 +1361,11 @@ document.addEventListener('DOMContentLoaded', function() {
         file_size = os.path.getsize(output_path)
         logger.info(f"HTML报表已保存: {output_path}")
         logger.info(f"  HTML文件大小: {file_size:,} 字节 ({file_size/1024:.1f} KB)")
+        return os.path.abspath(output_path)
+        logger.info(f"  HTML文件大小: {file_size:,} 字节 ({file_size/1024:.1f} KB)")
+        return os.path.abspath(output_path)
+
+        return os.path.abspath(output_path)
+        return os.path.abspath(output_path)
+        return os.path.abspath(output_path)
         return os.path.abspath(output_path)
