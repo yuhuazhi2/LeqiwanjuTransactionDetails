@@ -452,12 +452,47 @@ class HtmlRenderer:
         if not months:
             return result
 
-        # 构建行标签到 row_idx 映射（标准化后，去除前导空格）
-        label_row_map = {}
+        # ---- 按区域扫描 rows 列表，建立区域映射（修复同名科目混淆问题） ----
+        # 先定位各区域的关键行索引
+        revenue_start = None   # "销售业绩"行
+        revenue_end = None     # "主营业务成本"行
+        expense_start = None   # "营业费用"行
+        expense_end = None     # "管理费用"行
+        manage_end = None      # "财务费用"行
+
         for i, row in enumerate(rows):
-            label = row["label"].strip()
-            if label:
-                label_row_map[label] = i
+            rt = row["row_type"]
+            if rt == "sales":
+                revenue_start = i
+            elif rt == "cost":
+                revenue_end = i
+            elif rt == "expense_header":
+                expense_start = i
+            elif rt == "manage_header":
+                expense_end = i
+            elif rt == "finance_header":
+                manage_end = i
+
+        # 按区域建立 {科目名称: row_idx} 映射
+        revenue_label_map = {}   # 收入区域
+        expense_label_map = {}   # 营业费用区域
+        manage_label_map = {}    # 管理费用区域
+        all_label_map = {}       # 全局映射（兜底）
+
+        def _add_to_map(start_idx, end_idx, target_map):
+            """在 [start_idx, end_idx) 区间内扫描 rows，将标签加入指定映射"""
+            for i in range(start_idx, end_idx):
+                label = rows[i]["label"].strip()
+                if label:
+                    target_map[label] = i
+                    all_label_map[label] = i
+
+        if revenue_start is not None and revenue_end is not None:
+            _add_to_map(revenue_start + 1, revenue_end, revenue_label_map)
+        if expense_start is not None and expense_end is not None:
+            _add_to_map(expense_start + 1, expense_end, expense_label_map)
+        if expense_end is not None and manage_end is not None:
+            _add_to_map(expense_end + 1, manage_end, manage_label_map)
 
         # 定义要查询的科目前缀及其取值方向
         QUERY_PREFIXES = {
@@ -503,7 +538,23 @@ class HtmlRenderer:
                     ccode_name = code_name_map.get(ccode, "")
                     if not ccode_name:
                         continue
-                    row_idx = label_row_map.get(ccode_name)
+                    # 根据 ccode 前缀选择对应区域的映射
+                    if ccode.startswith(("5101", "5102")):
+                        row_idx = revenue_label_map.get(ccode_name)
+                    elif ccode.startswith("5501"):
+                        row_idx = expense_label_map.get(ccode_name)
+                    elif ccode.startswith("5502"):
+                        row_idx = manage_label_map.get(ccode_name)
+                    elif ccode.startswith("5503"):
+                        row_idx = manage_end  # 直接使用财务费用行号，不经过名称映射（因为该行是区域分隔行，不在管理费用区域映射范围内）
+                    elif ccode.startswith("5401"):
+                        # 直接使用 cost 行（revenue_end），不经过名称映射
+                        row_idx = revenue_end
+                    else:
+                        row_idx = all_label_map.get(ccode_name)
+                    # 如果在对应区域没找到，降级到全局映射（兜底）
+                    if row_idx is None:
+                        row_idx = all_label_map.get(ccode_name)
                     if row_idx is None:
                         continue
                     for month_num, val in monthly_vals.items():
@@ -516,12 +567,12 @@ class HtmlRenderer:
             except Exception as e:
                 logger.warning(f"  {db_name} 查询 {prefix} 科目数据失败: {e}")
 
-        # ---- 特殊处理：如果"主营业务成本"行在 label_row_map 中但没有数据
+        # ---- 特殊处理：如果"主营业务成本"行在 all_label_map 中但没有数据
         #      且期间损益结转也没有成本数据，尝试从 GL_AccSum 查 5401 单一级科目
         cost_label = "主营业务成本"
-        if cost_label in label_row_map and not any(
-            (label_row_map[cost_label], k) in result or
-            (label_row_map[cost_label], k) in ((r, c) for r, c in result)
+        if cost_label in all_label_map and not any(
+            (all_label_map[cost_label], k) in result or
+            (all_label_map[cost_label], k) in ((r, c) for r, c in result)
             for k in [f"month_{m}" for m in months]
         ):
             try:
@@ -533,7 +584,7 @@ class HtmlRenderer:
                     val = float(row.get("mc", 0) or 0)  # 成本取贷方
                     if ccode == "5401" and iperiod in months:
                         cost_monthly[iperiod] = cost_monthly.get(iperiod, 0) + val
-                row_idx = label_row_map[cost_label]
+                row_idx = all_label_map[cost_label]
                 for month_num, val in cost_monthly.items():
                     if val:
                         col_key = f"month_{month_num}"
@@ -569,12 +620,47 @@ class HtmlRenderer:
                 db_name, all_ccodes
             )
 
-            # 构建行标签到 row_idx 映射
-            label_row_map = {}
+            # ---- 按区域扫描 rows 列表，建立区域映射（修复同名科目混淆问题） ----
+            # 先定位各区域的关键行索引
+            revenue_start = None   # "销售业绩"行
+            revenue_end = None     # "主营业务成本"行
+            expense_start = None   # "营业费用"行
+            expense_end = None     # "管理费用"行
+            manage_end = None      # "财务费用"行
+
             for i, row in enumerate(rows):
-                label = row["label"].strip()
-                if label:
-                    label_row_map[label] = i
+                rt = row["row_type"]
+                if rt == "sales":
+                    revenue_start = i
+                elif rt == "cost":
+                    revenue_end = i
+                elif rt == "expense_header":
+                    expense_start = i
+                elif rt == "manage_header":
+                    expense_end = i
+                elif rt == "finance_header":
+                    manage_end = i
+
+            # 按区域建立 {科目名称: row_idx} 映射
+            revenue_label_map = {}   # 收入区域："销售业绩"与"主营业务成本"之间
+            expense_label_map = {}   # 营业费用区域："营业费用"与"管理费用"之间
+            manage_label_map = {}    # 管理费用区域："管理费用"与"财务费用"之间
+            all_label_map = {}       # 全局映射（兜底）
+
+            def _add_to_map(start_idx, end_idx, target_map):
+                """在 [start_idx, end_idx) 区间内扫描 rows，将标签加入指定映射"""
+                for i in range(start_idx, end_idx):
+                    label = rows[i]["label"].strip()
+                    if label:
+                        target_map[label] = i
+                        all_label_map[label] = i
+
+            if revenue_start is not None and revenue_end is not None:
+                _add_to_map(revenue_start + 1, revenue_end, revenue_label_map)
+            if expense_start is not None and expense_end is not None:
+                _add_to_map(expense_start + 1, expense_end, expense_label_map)
+            if expense_end is not None and manage_end is not None:
+                _add_to_map(expense_end + 1, manage_end, manage_label_map)
 
             # 构建月份到 col_key 映射
             month_col_map = {}
@@ -594,7 +680,23 @@ class HtmlRenderer:
                     continue
 
                 # 查找对应行号
-                row_idx = label_row_map.get(ccode_name)
+                # 根据 ccode 前缀选择对应区域的映射
+                if ccode.startswith(("5101", "5102")):
+                    row_idx = revenue_label_map.get(ccode_name)
+                elif ccode.startswith("5501"):
+                    row_idx = expense_label_map.get(ccode_name)
+                elif ccode.startswith("5502"):
+                    row_idx = manage_label_map.get(ccode_name)
+                elif ccode.startswith("5503"):
+                    row_idx = manage_end  # 直接使用财务费用行号，不经过名称映射（因为该行是区域分隔行，不在管理费用区域映射范围内）
+                elif ccode.startswith("5401"):
+                    # 直接使用 cost 行（revenue_end），不经过名称映射
+                    row_idx = revenue_end
+                else:
+                    row_idx = all_label_map.get(ccode_name)
+                # 如果在对应区域没找到，降级到全局映射（兜底）
+                if row_idx is None:
+                    row_idx = all_label_map.get(ccode_name)
                 if row_idx is None:
                     continue
 

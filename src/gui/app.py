@@ -21,8 +21,27 @@ from datetime import datetime
 
 from src.utils.browser_utils import open_file_with_firefox
 
-# 确保项目根目录在 sys.path 中
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# ---- PyInstaller 兼容路径处理 ----
+def _get_project_root():
+    """获取项目根目录路径（包含模板、配置等资源文件）"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后：资源文件在 _MEIPASS 临时目录
+        return sys._MEIPASS
+    else:
+        # 开发模式：回到项目根目录
+        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def _get_run_root():
+    """获取程序运行根目录（写入输出文件、日志的位置）"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后：输出到可执行文件所在目录（可写）
+        return os.path.dirname(sys.executable)
+    else:
+        # 开发模式：使用项目根目录
+        return _get_project_root()
+
+_PROJECT_ROOT = _get_project_root()
+_RUN_ROOT = _get_run_root()
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
@@ -40,17 +59,19 @@ class AccountYearFrame(ttk.LabelFrame):
     """
 
     def __init__(self, parent, accounts: list, years_map: dict[str, list[int]],
-                 default_year: int, **kwargs):
+                 default_year: int, saved_years: dict[str, int] = None, **kwargs):
         """
         :param parent: 父容器
         :param accounts: AccountInfo 列表
         :param years_map: {账套号: [年份列表(降序)]}
-        :param default_year: 默认选中年份
+        :param default_year: 默认选中年份（当没有保存的年份时使用）
+        :param saved_years: {账套号: 年份} — 上次用户选择的年份映射（可选）
         """
         super().__init__(parent, text="请选择每个账套的报表年份", padding=5, **kwargs)
         self.accounts = accounts
         self.years_map = years_map
         self.default_year = default_year
+        self.saved_years = saved_years or {}
         self._combos: list[ttk.Combobox] = []
         self._year_vars: list[tk.StringVar] = []
         self._build_ui()
@@ -91,18 +112,29 @@ class AccountYearFrame(ttk.LabelFrame):
             year_var = tk.StringVar()
             # 获取该账套对应的年份列表
             years = self.years_map.get(acc.cAcc_Id, [])
-            year_strings = [str(y) for y in years] if years else [str(self.default_year)]
+            # ★ 在年份列表头部插入一个空字符串作为第一个选项
+            #   用户选择空年份表示"跳过此账套"——不连接该账套数据库，
+            #   不会在报表中出现该店铺的表页。
+            year_strings = [""] + [str(y) for y in years] if years else [""]
 
             combo = ttk.Combobox(
                 row_frame, textvariable=year_var,
                 values=year_strings, width=8, state="readonly"
             )
-            # 确定默认值
-            default_str = str(self.default_year)
-            if default_str in year_strings:
-                combo.set(default_str)
-            elif year_strings:
-                combo.set(year_strings[0])
+            # 确定选中值（优先级：saved_years > default_year > 留空跳过）
+            # 1. 优先使用上次用户保存的年份选择
+            saved_year = self.saved_years.get(acc.cAcc_Id)
+            if saved_year and str(saved_year) in year_strings:
+                combo.set(str(saved_year))
+            else:
+                # 2. 其次使用默认年份
+                default_str = str(self.default_year)
+                if years and default_str in year_strings:
+                    combo.set(default_str)
+                # 3. 否则留空（默认=跳过该账套），不设置任何值
+            # 注意：如果 years 为空（该账套无任何年份数据），
+            #       或者选中的年份不在年份列表中，则下拉框保持空白，
+            #       语义上表示"跳过该账套"。
             combo.pack(side="left", padx=(5, 2))
 
             # 账套号
@@ -170,6 +202,7 @@ class MainWindow:
         self._all_accounts: list = []
         self._years_map: dict[str, list[int]] = {}
         self._is_connected: bool = False
+        self._saved_account_years: dict[str, int] = {}  # 上次保存的账套年份映射
 
         # 构建UI
         self._build_connection_panel()
@@ -337,13 +370,16 @@ class MainWindow:
             return today.year
 
     def _load_saved_config(self):
-        """加载上次保存的连接配置"""
+        """加载上次保存的连接配置和账套年份选择"""
         config = ConnectionConfigManager.load()
         self.entry_server.insert(0, config.get("server", ""))
         self.entry_username.delete(0, tk.END)
         self.entry_username.insert(0, config.get("username", "sa"))
         self.entry_password.delete(0, tk.END)
         self.entry_password.insert(0, config.get("password", ""))
+
+        # 加载上次保存的账套年份映射
+        self._saved_account_years = config.get("account_years", {})
 
     def _connect_database(self):
         """连接数据库（在后台线程执行）"""
@@ -364,8 +400,9 @@ class MainWindow:
         self._set_connection_ui_enabled(False)
         self._set_status("正在连接数据库...")
 
-        # 保存配置
-        ConnectionConfigManager.save(server, username, password)
+        # 保存配置（保留已有的 account_years，避免覆盖）
+        ConnectionConfigManager.save(server, username, password,
+                                     account_years=self._saved_account_years if self._saved_account_years else None)
 
         # 启动线程
         thread = threading.Thread(
@@ -432,12 +469,13 @@ class MainWindow:
         # 计算默认年份
         default_year = self._get_default_year()
 
-        # 创建带年份下拉框的账套列表
+        # 创建带年份下拉框的账套列表（传递上次保存的年份映射以恢复选择）
         self.account_year_frame = AccountYearFrame(
             self.account_inner_frame,
             self._all_accounts,
             self._years_map,
-            default_year
+            default_year,
+            saved_years=self._saved_account_years
         )
         self.account_year_frame.pack(fill="both", expand=True)
 
@@ -496,12 +534,33 @@ class MainWindow:
             messagebox.showwarning("提示", "账套列表为空，请检查数据库")
             return
 
+        # ★ 每次点击生成时，立即保存当前年份选择到JSON文件
+        current_years = self._save_current_years()
+        self._saved_account_years.update(current_years)
+        server = self.entry_server.get().strip()
+        username = self.entry_username.get().strip()
+        password = self.entry_password.get().strip()
+        if server:
+            ConnectionConfigManager.save(server, username, password,
+                                         account_years=self._saved_account_years)
+
+        # ★ 计算跳过的账套数量（年份为空表示跳过，不参与报表生成）
+        total_accounts = len(self.account_year_frame.accounts)
+        skipped_count = total_accounts - len(items)
+
         # 禁用操作按钮，显示进度
         self.btn_generate.config(state="disabled")
         self.btn_cancel.config(state="disabled")
         self.progress.pack(side="left", padx=(20, 0))
         self.progress.start()
-        self._set_status(f"正在生成报表框架，共 {len(items)} 个账套...")
+        # ★ 如果存在被跳过的账套，在状态栏给出明确提示
+        if skipped_count > 0:
+            self._set_status(
+                f"正在生成报表框架，共 {len(items)} 个账套..."
+                f"（已跳过 {skipped_count} 个未选择年份的账套）"
+            )
+        else:
+            self._set_status(f"正在生成报表框架，共 {len(items)} 个账套...")
 
         # 后台执行
         thread = threading.Thread(
@@ -554,7 +613,7 @@ class MainWindow:
                         "data_start_row": 3,
                     },
                     "output": {
-                        "dir": os.path.join(_PROJECT_ROOT, "output"),
+                        "dir": os.path.join(_RUN_ROOT, "output"),
                         "filename_prefix": "分店财务报表_",
                         "file_extension": ".xlsx",
                         "open_when_done": True,
@@ -563,7 +622,7 @@ class MainWindow:
                     "report_months": [],
                     "logging": {
                         "level": "INFO",
-                        "file": os.path.join(_PROJECT_ROOT, "logs", "app.log"),
+                        "file": os.path.join(_RUN_ROOT, "logs", "app.log"),
                         "console": False,
                     },
                 }
@@ -632,13 +691,35 @@ class MainWindow:
         self.status_bar.config(text=text)
         self.root.update_idletasks()
 
+    def _save_current_years(self) -> dict[str, int]:
+        """
+        收集当前账套年份下拉框中的选择值
+        :return: {账套号: 年份}
+        """
+        account_years = {}
+        if self.account_year_frame:
+            for acc, var in zip(self.account_year_frame.accounts,
+                                self.account_year_frame._year_vars):
+                year_str = var.get()
+                try:
+                    year = int(year_str)
+                    account_years[acc.cAcc_Id] = year
+                except (ValueError, TypeError):
+                    pass  # 跳过未选择年份的账套
+        return account_years
+
     def _on_close(self):
-        """关闭窗口前保存配置"""
+        """关闭窗口前保存配置和当前账套年份选择"""
         server = self.entry_server.get().strip()
         username = self.entry_username.get().strip()
         password = self.entry_password.get().strip()
         if server:
-            ConnectionConfigManager.save(server, username, password)
+            # 收集当前账套年份选择一并保存
+            account_years = self._save_current_years()
+            # 更新内存中的保存值，确保下次加载时能恢复
+            self._saved_account_years.update(account_years)
+            ConnectionConfigManager.save(server, username, password,
+                                         account_years=self._saved_account_years)
         self.root.destroy()
 
     def run(self):

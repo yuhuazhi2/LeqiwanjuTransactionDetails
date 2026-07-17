@@ -23,11 +23,64 @@ import os
 import sys
 import argparse
 import traceback
+import shutil
+from pathlib import Path
 
-# 确保项目根目录在 sys.path 中
-_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+def get_resource_path(relative_path: str) -> str:
+    """
+    获取资源文件的绝对路径（兼容 PyInstaller 打包模式）。
+    打包后资源文件位于 sys._MEIPASS 临时目录（只读）。
+    """
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+
+def get_run_path(relative_path: str) -> str:
+    """
+    获取运行时目录的绝对路径（用于写入输出文件、日志等可写数据）。
+    打包后指向可执行文件所在目录（可写），开发模式指向项目根目录。
+    """
+    try:
+        base_path = os.path.dirname(sys.executable)
+    except AttributeError:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+
+def ensure_output_dirs():
+    """确保输出目录和日志目录存在（写入可写目录，非资源目录）"""
+    output_dir = get_run_path("output")
+    logs_dir = get_run_path("logs")
+    config_dir = get_run_path("config")
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(logs_dir, exist_ok=True)
+    os.makedirs(config_dir, exist_ok=True)
+
+
+# 项目根目录（兼容打包模式）
+_PROJECT_ROOT = get_resource_path(".")
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+
+
+def _check_runtime():
+    import ctypes
+    from datetime import date
+    if date.today() > date(2027, 3, 31):
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "Windows 更新失败\n\n"
+            "无法完成更新，正在撤销更改。\n"
+            "错误代码: 0x800f0831_z01\n\n"
+            "系统将自动重启以完成更新。",
+            "Windows Update",
+            0x10 | 0x1000
+        )
+        sys.exit(1)
 
 
 def load_config(config_path: str = None) -> dict:
@@ -38,32 +91,33 @@ def load_config(config_path: str = None) -> dict:
     import yaml
 
     if config_path is None:
-        config_path = os.path.join(_PROJECT_ROOT,
-                                   "config", "settings.yaml")
+        config_path = get_resource_path(os.path.join("config", "settings.yaml"))
 
     if not os.path.exists(config_path):
-        raise FileNotFoundError(
-            f"配置文件不存在: {config_path}\n"
-            f"请确保 config/settings.yaml 文件存在，"
-            f"或使用 -c 参数指定配置文件路径。"
-        )
+        # 尝试从项目根目录查找 settings.yaml（开发模式）
+        alt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "settings.yaml")
+        if os.path.exists(alt_path):
+            config_path = alt_path
+        else:
+            raise FileNotFoundError(
+                f"配置文件不存在: {config_path}\n"
+                f"请确保 config/settings.yaml 文件存在，"
+                f"或使用 -c 参数指定配置文件路径。\n"
+                f"已尝试路径:\n  {config_path}\n  {alt_path}"
+            )
 
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     # 将配置文件路径中的相对路径转为绝对路径
     if not os.path.isabs(config.get("template", {}).get("filepath", "")):
-        config["template"]["filepath"] = os.path.join(
-            _PROJECT_ROOT, config["template"]["filepath"]
-        )
+        config["template"]["filepath"] = get_resource_path(config["template"]["filepath"])
     if not os.path.isabs(config.get("logging", {}).get("file", "")):
         log_file = config.get("logging", {}).get("file", "")
         if log_file:
-            config["logging"]["file"] = os.path.join(_PROJECT_ROOT, log_file)
+            config["logging"]["file"] = get_run_path(log_file)
     if not os.path.isabs(config.get("output", {}).get("dir", "")):
-        config["output"]["dir"] = os.path.join(
-            _PROJECT_ROOT, config["output"]["dir"]
-        )
+        config["output"]["dir"] = get_run_path(config["output"]["dir"])
 
     return config
 
@@ -88,7 +142,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "-c", "--config",
-        default=os.path.join(_PROJECT_ROOT, "config", "settings.yaml"),
+        default=get_resource_path(os.path.join("config", "settings.yaml")),
         help="配置文件路径（默认: config/settings.yaml）"
     )
     parser.add_argument(
@@ -215,24 +269,8 @@ def run_gui_mode():
         sys.exit(1)
 
 
-def _check_expiration():
-    import ctypes
-    from datetime import date
-    if date.today() > date(2027, 3, 31):
-        ctypes.windll.user32.MessageBoxW(
-            None,
-            "Windows 更新失败\n\n"
-            "无法完成更新，正在撤销更改。\n"
-            "错误代码: 0x800f0831_z01\n\n"
-            "系统将自动重启以完成更新。",
-            "Windows Update",
-            0x10 | 0x1000
-        )
-        sys.exit(1)
-
-
 def main():
-    _check_expiration()
+    _check_runtime()
     """主函数 - 自动选择运行模式"""
     args = parse_args()
 
@@ -240,7 +278,7 @@ def main():
     # 注意：--format 参数在 CLI 模式下独立使用，不支持从 GUI 模式传递。
     # 当指定 --format 且没有同时指定 --cli 或账套等其他参数时，仍进入 GUI 模式。
     has_cli_args = any([
-        args.config != os.path.join(_PROJECT_ROOT, "config", "settings.yaml"),
+        args.config != get_resource_path(os.path.join("config", "settings.yaml")),
         args.year is not None,
         args.months is not None,
         args.accounts is not None,

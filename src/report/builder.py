@@ -1114,18 +1114,70 @@ class ReportBuilder:
         code_name_map = self.extractor.get_code_subject_name_batch(db_name, all_ccodes)
         logger.debug(f"  科目名称映射: {code_name_map}")
 
-        # ---- 4. 扫描 A 列，建立 {科目名称: 行号} 映射 ----
-        label_row_map = {}  # {ccode_name: row_index}
+        # ---- 4. 扫描 A 列，定位各区域的关键行 ----
+        # 先找出四个区域分隔行的行号，用于后续精确匹配
+        sales_row = None           # "销售业绩"行号
+        cost_row = None            # "主营业务成本"行号
+        expense_row = None         # "营业费用"行号
+        manage_row = None          # "管理费用"行号
+        finance_row = None         # "财务费用"行号
+
         for row_idx in range(1, ws.max_row + 1):
             cell_val = ws.cell(row_idx, 1).value
-            if cell_val:
-                label = str(cell_val).strip()
-                if label:
-                    label_row_map[label] = row_idx
+            cell_str = str(cell_val).strip() if cell_val else ""
+            if cell_str == "销售业绩":
+                sales_row = row_idx
+            elif cell_str == "主营业务成本":
+                cost_row = row_idx
+            elif cell_str == "营业费用":
+                expense_row = row_idx
+            elif cell_str == "管理费用":
+                manage_row = row_idx
+            elif cell_str == "财务费用":
+                finance_row = row_idx
 
-        # ---- 5. 遍历每条凭证分录，填列到对应行列 ----
-        # 不再对 ccode_equal 做任何过滤（取消 ccocode_equal=3131 限制），
-        # 所有期间损益结转记录（收入类取md借方，成本费用类取mc贷方）都参与填列。
+        logger.debug(f"  _fill_period_transfer_data 区域定位: "
+                     f"销售业绩{sales_row}, 主营业务成本{cost_row}, "
+                     f"营业费用{expense_row}, 管理费用{manage_row}, "
+                     f"财务费用{finance_row}")
+
+        # ---- 5. 按区域扫描 A 列，建立 {科目名称: 行号} 映射 ----
+        # 关键修复：不再建立单一的全局名称→行号映射，而是按区域分别建立，
+        # 这样同名科目（如"其他"出现在收入区域和费用区域）不会互相覆盖。
+        # 收入区域："销售业绩"与"主营业务成本"之间
+        # 营业费用区域："营业费用"与"管理费用"之间
+        # 管理费用区域："管理费用"与"财务费用"之间
+        revenue_label_map = {}   # 收入区域 {ccode_name: row_index}
+        expense_label_map = {}   # 营业费用区域 {ccode_name: row_index}
+        manage_label_map = {}    # 管理费用区域 {ccode_name: row_index}
+        all_label_map = {}       # 全局 {ccode_name: row_index}（兜底）
+
+        def _build_label_map(start_row, end_row, target_map):
+            """在 [start_row, end_row) 区间内扫描A列，建立名称→行号映射"""
+            for r in range(start_row, end_row):
+                cell_val = ws.cell(r, 1).value
+                if cell_val:
+                    label = str(cell_val).strip()
+                    if label:
+                        target_map[label] = r
+                        all_label_map[label] = r  # 同时加入全局映射
+
+        if sales_row is not None and cost_row is not None:
+            _build_label_map(sales_row + 1, cost_row, revenue_label_map)
+        if expense_row is not None and manage_row is not None:
+            _build_label_map(expense_row + 1, manage_row, expense_label_map)
+        if manage_row is not None and finance_row is not None:
+            _build_label_map(manage_row + 1, finance_row, manage_label_map)
+
+        logger.debug(f"  _fill_period_transfer_data 区域映射: "
+                     f"收入区域={list(revenue_label_map.keys())}, "
+                     f"营业费用区域={list(expense_label_map.keys())}, "
+                     f"管理费用区域={list(manage_label_map.keys())}")
+
+        # ---- 6. 遍历每条凭证分录，根据 ccode 前缀选择对应区域的映射 ----
+        # 核心修复：不再只用科目名称做模糊匹配，而是根据 ccode 前缀
+        # 确定该科目属于哪个区域（收入/营业费用/管理费用），
+        # 然后在对应区域的名称→行号映射中查找，同名科目不会弄混。
         filled_count = 0
         for vouch in vouchers:
             ccode = str(vouch.get("ccode", "")).strip()
@@ -1138,8 +1190,29 @@ class ReportBuilder:
             if not ccode_name:
                 continue
 
-            # 查找科目名称对应的行号
-            row_idx = label_row_map.get(ccode_name, None)
+            # 根据 ccode 前缀选择对应的区域映射表
+            # 收入类（5101xx / 5102xx）→ 使用收入区域映射
+            # 营业费用类（5501xx）→ 使用营业费用区域映射
+            # 管理费用类（5502xx）→ 使用管理费用区域映射
+            # 成本类（5401）→ 使用收入区域映射（成本行紧跟在收入区域后）
+            # 财务费用（5503）→ 使用管理费用区域映射（财务费用在管理费用下方）
+            if ccode.startswith(("5101", "5102")):
+                row_idx = revenue_label_map.get(ccode_name)
+            elif ccode.startswith("5501"):
+                row_idx = expense_label_map.get(ccode_name)
+            elif ccode.startswith("5502"):
+                row_idx = manage_label_map.get(ccode_name)
+            elif ccode.startswith("5503"):
+                row_idx = finance_row  # 直接使用财务费用行号，不经过名称映射（因为该行是区域分隔行，不在管理费用区域映射范围内）
+            elif ccode.startswith("5401"):
+                row_idx = cost_row  # 直接使用主营业务成本行号，不经过名称映射（因为该行是区域分隔行，不在收入区域映射范围内）
+            else:
+                # 其他科目：兜底使用全局映射
+                row_idx = all_label_map.get(ccode_name)
+
+            # 如果在对应区域没找到，降级到全局映射（兜底）
+            if row_idx is None:
+                row_idx = all_label_map.get(ccode_name)
             if row_idx is None:
                 continue
 
